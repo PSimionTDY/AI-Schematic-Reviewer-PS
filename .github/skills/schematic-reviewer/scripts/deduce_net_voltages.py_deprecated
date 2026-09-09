@@ -1,0 +1,741 @@
+#!/usr/bin/env python3
+"""
+DEPRECATED — deduce_net_voltages.py is no longer part of the review pipeline.
+
+Net voltages must be set by IC/inductor/oscillator review agents that have read
+the datasheet and traced the actual circuit.  Running this script would write
+heuristic guesses (from net names and passive topology) as if they were circuit-
+traced values, which pollutes the DB with low-quality data.
+
+Do NOT run this script in a normal review.  It is kept for reference only.
+
+-----------------------------------------------------------------------
+Original description (historical):
+
+deduce_net_voltages.py — Phase 2 voltage deduction engine.
+
+Replaces name-based 'hint' confidence with 'deduced' (or higher) confidence
+by tracing actual circuit drivers through four passes:
+
+  Pass 1 — LDO / regulator output pins
+  Pass 2 — power_out / power_supply pins driven by confirmed/certain sources
+  Pass 3 — passive propagation (inductors, ferrite beads, low-value resistors ≤ 10 Ω)
+  Pass 4 — resistor voltage dividers
+
+After all passes, nets that are connected to power_in pins and still have
+unknown/hint voltage generate 'question' issues.
+
+Usage:
+    python deduce_net_voltages.py reviews/<SCH_ID>/REVIEW/review.db [--verbose]
+"""
+
+from __future__ import annotations
+
+import argparse
+import re
+import sys
+from pathlib import Path
+
+# Ensure the scripts directory is on sys.path so sibling modules import cleanly
+_SCRIPTS_DIR = str(Path(__file__).parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+
+from db_io import get_connection, insert_issue, update_net
+from pipeline_status import mark_stage
+
+# ---------------------------------------------------------------------------
+# Confidence ordering (canonical — mirrors schematic_builder.CONFIDENCE_ORDER)
+# ---------------------------------------------------------------------------
+
+CONFIDENCE_ORDER = [
+    "unknown", "hint", "doubtful", "inferred",
+    "deduced", "calculated", "confirmed", "certain",
+]
+
+
+def _conf_index(val: str | None) -> int:
+    """Return sort index for a confidence string; unknown keys map to 0."""
+    try:
+        return CONFIDENCE_ORDER.index(val or "unknown")
+    except ValueError:
+        return 0
+
+
+# ---------------------------------------------------------------------------
+# Regulator / passive type helpers
+# ---------------------------------------------------------------------------
+
+_REGULATOR_TYPES = frozenset({"ldo", "voltage_regulator", "dc_dc_converter", "regulator"})
+_PASSIVE_TYPES = frozenset({"inductor", "ferrite_bead", "resistor"})
+
+# Matches functional pin identifiers used as regulator output names
+_REGULATOR_OUT_PIN_RE = re.compile(r"^(OUT|VOUT|OUTPUT|VO)$", re.IGNORECASE)
+
+# GND net-name pattern (consistent with schematic_builder.GND_NAMES)
+_GND_RE = re.compile(
+    r"^(GND|AGND|DGND|PGND|CGND|SGND|CHASSIS|EARTH|PE|SHIELD|RTN)",
+    re.IGNORECASE,
+)
+
+_REF_PREFIX_TYPE = {
+    "FB":  "ferrite_bead",
+    "FL":  "ferrite_bead",
+    "L":   "inductor",
+    "R":   "resistor",
+}
+
+
+def _comp_type_from_ref(ref: str) -> str:
+    """Infer component type from ref-designator prefix."""
+    upper = ref.upper()
+    for prefix in sorted(_REF_PREFIX_TYPE, key=len, reverse=True):
+        if upper.startswith(prefix):
+            return _REF_PREFIX_TYPE[prefix]
+    return "other"
+
+
+# ---------------------------------------------------------------------------
+# Value-string parsers
+# ---------------------------------------------------------------------------
+
+def _parse_voltage(v_str: str | None) -> float | None:
+    """Parse a component value string that encodes a voltage.
+
+    Handles:
+      - Decimal with dot: 3.3V, +1.8V
+      - European notation: 3V3 → 3.3, 1V8 → 1.8
+      - Integer volts: 5V, 12V, 24V
+
+    Returns None for empty, zero, or unparseable strings.
+    """
+    if not v_str:
+        return None
+    s = v_str.strip()
+    # Decimal: [+]3.3V
+    m = re.match(r"^[+]?(\d+\.\d+)[Vv]$", s)
+    if m:
+        v = float(m.group(1))
+        return v if v > 0.0 else None
+    # European: 3V3, 1V8, 2V5
+    m = re.match(r"^(\d+)[Vv](\d+)$", s)
+    if m:
+        v = float(f"{m.group(1)}.{m.group(2)}")
+        return v if v > 0.0 else None
+    # Integer: [+]5V, 12V
+    m = re.match(r"^[+]?(\d+)[Vv]$", s)
+    if m:
+        v = float(m.group(1))
+        return v if v > 0.0 else None
+    return None
+
+
+def _parse_resistance(value_str: str | None) -> float | None:
+    """Parse a resistance value string to ohms.
+
+    Handles standard SI notation, European letter-separator (4K7, 1R5),
+    milli-ohm (10m), and Altium symbolic zero-ohm footprint names.
+    Returns None if unparseable.
+    """
+    if not value_str:
+        return None
+    s = value_str.strip()
+    # Altium symbolic zero-ohm (e.g. RES_x0_…)
+    if re.search(r"[_\-]x0[_\-]|[_\-]x0$|^x0[_\-]", s, re.IGNORECASE):
+        return 0.0
+    m = re.match(r"^(\d+(?:\.\d+)?)[Kk](\d+)$", s)
+    if m:
+        return float(m.group(1)) * 1000 + float(m.group(2)) * 100
+    m = re.match(r"^(\d+(?:\.\d+)?)[Rr](\d+)$", s)
+    if m:
+        return float(m.group(1)) + float(m.group(2)) * 0.1
+    m = re.match(r"^(\d+(?:\.\d+)?)([KkMmRrΩ]?)$", s)
+    if not m:
+        return None
+    val = float(m.group(1))
+    suffix = m.group(2)
+    if suffix in ("K", "k"):
+        return val * 1000
+    if suffix == "M":
+        return val * 1e6
+    if suffix == "m":
+        return val * 0.001
+    return val  # R, Ω, or bare number → ohms
+
+
+# ---------------------------------------------------------------------------
+# Graph loader
+# ---------------------------------------------------------------------------
+
+def _load_graph(conn):
+    """Load nets, components, and pins into plain dicts for fast traversal.
+
+    Returns:
+        nets       — {net_name: row_dict}
+        components — {ref: row_dict}
+        pins       — {ref: {pin_id: row_dict}}
+    """
+    nets: dict[str, dict] = {}
+    for r in conn.execute("SELECT * FROM nets"):
+        d = dict(r)
+        d.setdefault("confidence", "unknown")
+        nets[d["name"]] = d
+
+    components: dict[str, dict] = {}
+    for r in conn.execute("SELECT * FROM components"):
+        d = dict(r)
+        components[d["ref"]] = d
+
+    # pins indexed by ref then pin identifier
+    pins: dict[str, dict[str, dict]] = {}
+    for r in conn.execute("SELECT * FROM pins"):
+        d = dict(r)
+        pins.setdefault(d["ref"], {})[d["pin"]] = d
+
+    return nets, components, pins
+
+
+# ---------------------------------------------------------------------------
+# Shared update helper
+# ---------------------------------------------------------------------------
+
+def _try_update(
+    conn,
+    nets: dict,
+    net_name: str,
+    voltage: float,
+    confidence: str,
+    source_ref: str | None = None,
+    source_pin: str | None = None,
+    net_type: str | None = None,
+    driver_type: str | None = None,
+    verbose: bool = False,
+) -> bool:
+    """Update *net_name* if *confidence* is strictly higher than its current level.
+
+    Also updates the best-known voltage metadata when confidence improves.
+    Returns True when the DB was written.
+    """
+    net = nets.get(net_name)
+    if net is None:
+        return False
+    old_conf = net.get("confidence") or "unknown"
+    old_v = net.get("voltage")
+    if _conf_index(confidence) <= _conf_index(old_conf):
+        return False
+
+    kwargs: dict[str, object] = {
+        "voltage": voltage,
+        "confidence": confidence,
+    }
+    local_updates: dict[str, object] = {
+        "voltage": voltage,
+        "confidence": confidence,
+    }
+    if source_ref is not None:
+        kwargs["voltage_source_ref"] = source_ref
+        local_updates["voltage_source_ref"] = source_ref
+    if source_pin is not None:
+        kwargs["voltage_source_pin"] = source_pin
+        local_updates["voltage_source_pin"] = source_pin
+    if net_type is not None:
+        kwargs["type"] = net_type
+        local_updates["type"] = net_type
+    if driver_type is not None:
+        kwargs["voltage_driver_type"] = driver_type
+        local_updates["voltage_driver_type"] = driver_type
+
+    update_net(conn, net_name, **kwargs)
+    nets[net_name].update(local_updates)
+
+    if verbose:
+        src = f" ← {source_ref}" if source_ref else ""
+        print(f"  {net_name}: {old_v}@{old_conf} → {voltage}@{confidence}{src}")
+    return True
+
+
+def _capped_passive_confidence(source_confidence: str | None) -> str:
+    """Return propagated confidence capped at ``deduced`` for passive traversal."""
+    source_confidence = source_confidence or "unknown"
+    if _conf_index(source_confidence) > _conf_index("deduced"):
+        return "deduced"
+    return source_confidence
+
+
+def _passive_source_metadata(source_net: dict, passive_type: str) -> tuple[str | None, str | None, str | None]:
+    """Preserve the true upstream driver when traversing passives."""
+    source_ref = source_net.get("voltage_source_ref")
+    source_pin = source_net.get("voltage_source_pin")
+    driver_type = source_net.get("voltage_driver_type")
+    if passive_type == "resistor":
+        driver_type = f"{driver_type}_via_resistor" if driver_type else "propagated_via_resistor"
+    return source_ref, source_pin, driver_type
+
+
+# ---------------------------------------------------------------------------
+# Pass 1 — LDO / regulator output pins
+# ---------------------------------------------------------------------------
+
+def _pass1_ldo_outputs(conn, nets, components, pins, verbose=False) -> int:
+    """Identify LDO/regulator output pins and set their net voltages.
+
+    Voltage is determined from:
+      1. ``output_voltage_v`` entry in ``datasheet_fields`` JSON (if column exists)
+      2. Parsed from the component's ``value`` field (e.g. "3.3V", "5V")
+
+    Confidence is ``'calculated'`` when derived from the value field,
+    ``'deduced'`` when taken from datasheet data.
+    """
+    # Check whether datasheet_fields JSON column exists
+    col_names = {
+        r[1]
+        for r in conn.execute("PRAGMA table_info(components)").fetchall()
+    }
+    has_dsf = "datasheet_fields" in col_names
+
+    updated = 0
+    for ref, comp in components.items():
+        ctype = (comp.get("comp_type") or "").lower()
+        if ctype not in _REGULATOR_TYPES:
+            continue
+
+        comp_pins = pins.get(ref, {})
+        for pin_id, pin_info in comp_pins.items():
+            net_name = pin_info.get("net")
+            if not net_name:
+                continue
+
+            direction = pin_info.get("direction") or ""
+            is_out = direction in ("power_out", "output") or bool(
+                _REGULATOR_OUT_PIN_RE.match(pin_id)
+            )
+            if not is_out:
+                continue
+
+            # --- Determine output voltage ---
+            voltage: float | None = None
+            confidence: str = "calculated"
+
+            # Prefer datasheet_fields.output_voltage_v when available
+            if has_dsf:
+                import json as _json
+                dsf_raw = comp.get("datasheet_fields")
+                if dsf_raw:
+                    try:
+                        dsf = _json.loads(dsf_raw) if isinstance(dsf_raw, str) else dsf_raw
+                        v = dsf.get("output_voltage_v")
+                        if v is not None:
+                            try:
+                                voltage = float(v)
+                                confidence = "deduced"
+                            except (TypeError, ValueError):
+                                pass
+                    except Exception:
+                        pass
+
+            # Fall back to value field
+            if voltage is None:
+                voltage = _parse_voltage(comp.get("value"))
+
+            if voltage is None or voltage <= 0.0:
+                continue
+
+            if _try_update(
+                conn,
+                nets,
+                net_name,
+                voltage,
+                confidence,
+                source_ref=ref,
+                source_pin=pin_id,
+                net_type="power",
+                driver_type="regulator_output",
+                verbose=verbose,
+            ):
+                updated += 1
+
+    return updated
+
+
+# ---------------------------------------------------------------------------
+# Pass 2 — power_out / power_supply pins from confirmed/certain sources
+# ---------------------------------------------------------------------------
+
+def _pass2_power_supply_pins(conn, nets, components, pins, verbose=False) -> int:
+    """Propagate confirmed/certain net voltages via power_out/power_supply pins.
+
+    For each component, if any of its pins is connected to a net whose voltage
+    is already 'confirmed' or 'certain', propagate that voltage to all other
+    pins on that component that have direction 'power_out' or 'power_supply',
+    using confidence 'deduced'.
+    """
+    HIGH_CONF = {"confirmed", "certain"}
+    OUT_DIRS = {"power_out", "power_supply"}
+    updated = 0
+
+    for ref, comp_pins in pins.items():
+        # Collect pins with known high-confidence voltages
+        known: list[tuple[str, float]] = []  # (net_name, voltage)
+        for pin_id, pin_info in comp_pins.items():
+            net_name = pin_info.get("net")
+            if not net_name:
+                continue
+            net = nets.get(net_name, {})
+            if (net.get("confidence") or "unknown") in HIGH_CONF and net.get("voltage") is not None:
+                known.append((net_name, net["voltage"]))
+
+        if not known:
+            continue
+
+        # Use the first confirmed/certain voltage as the source
+        _src_net, src_voltage = known[0]
+
+        # Propagate to output pins
+        for pin_id, pin_info in comp_pins.items():
+            direction = pin_info.get("direction") or ""
+            if direction not in OUT_DIRS:
+                continue
+            net_name = pin_info.get("net")
+            if not net_name:
+                continue
+            if _try_update(
+                conn,
+                nets,
+                net_name,
+                src_voltage,
+                "deduced",
+                source_ref=ref,
+                source_pin=pin_id,
+                net_type="power",
+                driver_type="power_out_pin",
+                verbose=verbose,
+            ):
+                updated += 1
+
+    return updated
+
+
+# ---------------------------------------------------------------------------
+# Pass 3 — passive propagation (to convergence)
+# ---------------------------------------------------------------------------
+
+def _pass3_passive_propagation(conn, nets, components, pins, verbose=False) -> int:
+    """Propagate voltages through inductors, ferrite beads, and ≤ 10 Ω resistors.
+
+    Keeps the original upstream driver metadata when traversing passives.
+    Confidence propagated through passives is capped at ``deduced``.
+    """
+    # Build list of eligible two-terminal passives: {ref: (net_a, net_b, passive_type)}
+    passive_pairs: dict[str, tuple[str, str, str]] = {}
+    for ref, comp in components.items():
+        ctype = (comp.get("comp_type") or _comp_type_from_ref(ref)).lower()
+        if ctype not in _PASSIVE_TYPES:
+            continue
+        if ctype == "resistor":
+            r = _parse_resistance(comp.get("value"))
+            if r is None or r > 10.0:
+                continue
+
+        comp_pins = pins.get(ref, {})
+        net_list = [p["net"] for p in comp_pins.values() if p.get("net")]
+        if len(net_list) == 2:
+            passive_pairs[ref] = (net_list[0], net_list[1], ctype)
+
+    updated = 0
+    while True:
+        changed = 0
+        for ref, (net_a, net_b, passive_type) in passive_pairs.items():
+            net_a_data = nets.get(net_a, {})
+            net_b_data = nets.get(net_b, {})
+            v_a = net_a_data.get("voltage")
+            v_b = net_b_data.get("voltage")
+
+            if v_a is not None and v_b is None:
+                source_ref, source_pin, driver_type = _passive_source_metadata(net_a_data, passive_type)
+                if _try_update(
+                    conn,
+                    nets,
+                    net_b,
+                    v_a,
+                    _capped_passive_confidence(net_a_data.get("confidence")),
+                    source_ref=source_ref,
+                    source_pin=source_pin,
+                    net_type=net_a_data.get("type"),
+                    driver_type=driver_type,
+                    verbose=verbose,
+                ):
+                    changed += 1
+                    updated += 1
+            elif v_b is not None and v_a is None:
+                source_ref, source_pin, driver_type = _passive_source_metadata(net_b_data, passive_type)
+                if _try_update(
+                    conn,
+                    nets,
+                    net_a,
+                    v_b,
+                    _capped_passive_confidence(net_b_data.get("confidence")),
+                    source_ref=source_ref,
+                    source_pin=source_pin,
+                    net_type=net_b_data.get("type"),
+                    driver_type=driver_type,
+                    verbose=verbose,
+                ):
+                    changed += 1
+                    updated += 1
+
+        if not changed:
+            break
+
+    return updated
+
+
+# ---------------------------------------------------------------------------
+# Pass 4 — voltage dividers
+# ---------------------------------------------------------------------------
+
+def _pass4_voltage_dividers(conn, nets, components, pins, verbose=False) -> int:
+    """Calculate output voltages of resistor voltage dividers.
+
+    Topology:
+        known_rail ── R_top ── mid_node ── R_bottom ── GND
+
+    Applies only when:
+      - Both resistor values are parseable
+      - The known rail has confidence ≥ 'deduced'
+      - The middle node voltage is currently unknown
+
+    Result: V_mid = V_in × R_bottom / (R_top + R_bottom), confidence='calculated'
+    """
+    MIN_CONF_IDX = _conf_index("deduced")
+    updated = 0
+
+    def _is_gnd(net_name: str) -> bool:
+        if _GND_RE.match(net_name):
+            return True
+        return nets.get(net_name, {}).get("voltage") == 0.0
+
+    # Build resistor adjacency: {net_name: [(ref, other_net, ohms), ...]}
+    net_adj: dict[str, list[tuple[str, str, float]]] = {}
+    for ref, comp in components.items():
+        ctype = (comp.get("comp_type") or _comp_type_from_ref(ref)).lower()
+        if ctype != "resistor":
+            continue
+        r = _parse_resistance(comp.get("value"))
+        if r is None:
+            continue
+        comp_pins = pins.get(ref, {})
+        net_list = [p["net"] for p in comp_pins.values() if p.get("net")]
+        if len(net_list) != 2:
+            continue
+        net_a, net_b = net_list[0], net_list[1]
+        net_adj.setdefault(net_a, []).append((ref, net_b, r))
+        net_adj.setdefault(net_b, []).append((ref, net_a, r))
+
+    for mid_net in list(net_adj):
+        if nets.get(mid_net, {}).get("voltage") is not None:
+            continue  # already resolved
+
+        tops: list[tuple[str, str, float, float]] = []  # (ref, source_net, v_in, r_top)
+        bottoms: list[tuple[str, float]] = []            # (ref, r_bot)
+
+        for ref, other_net, resistance in net_adj.get(mid_net, []):
+            if _is_gnd(other_net):
+                bottoms.append((ref, resistance))
+            else:
+                other = nets.get(other_net, {})
+                v_in = other.get("voltage")
+                other_conf = other.get("confidence") or "unknown"
+                if v_in is not None and _conf_index(other_conf) >= MIN_CONF_IDX:
+                    tops.append((ref, other_net, v_in, resistance))
+
+        if len(tops) == 1 and len(bottoms) == 1:
+            _r_top_ref, source_net_name, v_in, r_top = tops[0]
+            _r_bot_ref, r_bot = bottoms[0]
+            if r_top > 0 and r_bot > 0:
+                v_out = round(v_in * r_bot / (r_top + r_bot), 6)
+                source_net = nets.get(source_net_name, {})
+                if _try_update(
+                    conn,
+                    nets,
+                    mid_net,
+                    v_out,
+                    "calculated",
+                    source_ref=source_net.get("voltage_source_ref"),
+                    source_pin=source_net.get("voltage_source_pin"),
+                    driver_type="resistor_divider",
+                    verbose=verbose,
+                ):
+                    updated += 1
+
+    return updated
+
+
+# ---------------------------------------------------------------------------
+# Issue generation for unresolved power nets
+# ---------------------------------------------------------------------------
+
+def _write_unknown_power_issues(conn, nets, verbose=False) -> int:
+    """Write 'question' issues for power-input nets whose voltage is still unknown.
+
+    Only flags nets connected to at least one 'power_in' pin and whose
+    confidence is still 'unknown' or 'hint' after all passes.
+    """
+    LOW_CONF = {"unknown", "hint"}
+
+    # Collect nets that have at least one power_in pin
+    power_in_nets: set[str] = set()
+    for row in conn.execute(
+        "SELECT DISTINCT net FROM pins WHERE direction = 'power_in' AND net IS NOT NULL"
+    ):
+        power_in_nets.add(row["net"])
+
+    written = 0
+    for net_name, net in nets.items():
+        if net_name not in power_in_nets:
+            continue
+        conf = net.get("confidence") or "unknown"
+        if conf not in LOW_CONF:
+            continue
+        # GND is always resolved — skip
+        if net.get("voltage") == 0.0:
+            continue
+
+        issue = {
+            "severity":    "question",
+            "type":        "voltage",
+            "summary":     f"{net_name}: power net voltage unknown",
+            "description": (
+                f"Net {net_name} is connected to power input pins but its voltage "
+                f"could not be deduced from circuit drivers."
+            ),
+            "resolution":  (
+                "Identify the voltage source for this net and ensure it is documented."
+            ),
+            "net":    net_name,
+            "source": "deduce_net_voltages",
+        }
+        insert_issue(conn, issue)
+        if verbose:
+            print(f"  issue: {net_name} — power net voltage unknown")
+        written += 1
+
+    return written
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def deduce_net_voltages(db_path: str | Path, verbose: bool = False) -> dict:
+    """Run all deduction passes on *db_path* and return a summary dict.
+
+    Marks the ``voltage_deduction`` pipeline stage as 'done' on success.
+
+    Returns:
+        {
+            "pass1": <int>,   # LDO output pins resolved
+            "pass2": <int>,   # power-supply-pin propagations
+            "pass3": <int>,   # passive-propagation nets resolved
+            "pass4": <int>,   # voltage-divider nodes resolved
+            "unknown_power_nets": <int>,
+            "issues_written": <int>,
+        }
+    """
+    db_path = Path(db_path)
+    conn = get_connection(db_path)
+    try:
+        nets, components, pins = _load_graph(conn)
+
+        if verbose:
+            print(f"Loaded {len(nets)} nets, {len(components)} components")
+
+        p1 = _pass1_ldo_outputs(conn, nets, components, pins, verbose=verbose)
+        if verbose:
+            print(f"Pass 1 (LDO outputs):        {p1} nets updated")
+
+        p2 = _pass2_power_supply_pins(conn, nets, components, pins, verbose=verbose)
+        if verbose:
+            print(f"Pass 2 (power supply pins):  {p2} nets updated")
+
+        p3 = _pass3_passive_propagation(conn, nets, components, pins, verbose=verbose)
+        if verbose:
+            print(f"Pass 3 (passive propagation):{p3} nets updated")
+
+        p4 = _pass4_voltage_dividers(conn, nets, components, pins, verbose=verbose)
+        if verbose:
+            print(f"Pass 4 (voltage dividers):   {p4} nets updated")
+
+        # Count nets that still have low-confidence voltage (for the summary)
+        low = {"unknown", "hint"}
+        unknown_power_nets = sum(
+            1 for n, d in nets.items()
+            if (d.get("confidence") or "unknown") in low
+            and d.get("voltage") != 0.0
+        )
+
+        issues_written = _write_unknown_power_issues(conn, nets, verbose=verbose)
+
+        result = {
+            "pass1": p1,
+            "pass2": p2,
+            "pass3": p3,
+            "pass4": p4,
+            "unknown_power_nets": unknown_power_nets,
+            "issues_written": issues_written,
+        }
+    finally:
+        conn.close()
+
+    mark_stage(db_path, "voltage_deduction", "done")
+    return result
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Phase 2 voltage deduction — traces circuit drivers to resolve net voltages."
+    )
+    parser.add_argument(
+        "db",
+        help="Path to review.db (or workspace directory; REVIEW/review.db is appended).",
+    )
+    parser.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        help="Print each net update with old→new confidence.",
+    )
+    args = parser.parse_args()
+
+    db_path = Path(args.db)
+    if db_path.is_dir():
+        db_path = db_path / "REVIEW" / "review.db"
+
+    print(
+        "WARNING: deduce_net_voltages.py is DEPRECATED and no longer part of the review pipeline.\n"
+        "Net voltages must be set by IC/inductor/oscillator review agents.\n"
+        "Proceeding anyway — press Ctrl+C to abort.",
+        file=sys.stderr,
+    )
+
+    if not db_path.exists():
+        print(f"Error: database not found: {db_path}", file=sys.stderr)
+        sys.exit(1)
+
+    result = deduce_net_voltages(db_path, verbose=args.verbose)
+
+    total = result["pass1"] + result["pass2"] + result["pass3"] + result["pass4"]
+    print(f"deduce_net_voltages: {db_path}")
+    print(f"  Pass 1 (LDO outputs):        {result['pass1']}")
+    print(f"  Pass 2 (power supply pins):  {result['pass2']}")
+    print(f"  Pass 3 (passive propagation):{result['pass3']}")
+    print(f"  Pass 4 (voltage dividers):   {result['pass4']}")
+    print(f"  Total nets resolved:         {total}")
+    print(f"  Unknown power nets:          {result['unknown_power_nets']}")
+    print(f"  Issues written:              {result['issues_written']}")
+
+
+if __name__ == "__main__":
+    main()

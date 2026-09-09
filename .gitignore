@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project-specific
+datasheets/
+bom_exports/
+SCH[0-9]*/
+legacy/
+*.log
+
+# Generated reports (regenerate with schematic_parser.py)
+CONNECTIONS_REPORT.md
+
+# Temporary files
+*.tmp
+*.bak
+
+# Copilot session artifacts
+copilot-session-*.html
+copilot-session-*.md
