@@ -1,5 +1,12 @@
 # Copilot Instructions — Schematic Reviewer
 
+## Datasheet / part-info source policy
+
+Use the **`dokarkiv`** skill by default for all datasheet and component-information lookups
+(`\\SE-ARN-FS2\Vol1\DOKARKIV`). **Only use the `highstage` skill if the user explicitly asks for
+Highstage** (e.g. says "check Highstage" or references a Highstage part ID directly). Otherwise,
+assume DOKARKIV.
+
 ## Python / Virtual Environment
 
 **Always use the repo venv** — never system Python or bare `pip`:

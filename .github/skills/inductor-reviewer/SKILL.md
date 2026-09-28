@@ -21,7 +21,7 @@ Datasheet JSON: {datasheet_json_path}   ← null if not yet extracted
      venv\Scripts\python.exe .github\skills\schematic-reviewer\scripts\extract_pdf_text.py {datasheet_path}
      ```
      Use `--info` first to check page count. Add `--no-ocr` for text-layer datasheets.
-  2. Write `datasheets/{highstage_id}/datasheet.json` following `.github/skills/schematic-reviewer/references/datasheet_schema.md`.
+  2. Write `datasheets/{part_number}/datasheet.json` following `.github/skills/schematic-reviewer/references/datasheet_schema.md`.
      Key fields to extract: `inductance`, `i_sat`, `i_rms`, `dcr`, `voltage_rating`, `package`.
 
 **If `datasheet_json_path` is not null**: read it with the `view` tool.

@@ -2,6 +2,15 @@
 
 This document describes the Claude skills available in this schematic review project.
 
+## Datasheet / part-info source policy
+
+**Use the `dokarkiv` skill by default for all datasheet and component-information lookups.**
+The internal DOKARKIV network file share (`\\SE-ARN-FS2\Vol1\DOKARKIV`) is the standard source.
+
+**Do not use the `highstage` skill unless the user explicitly asks for Highstage** (e.g. says
+"check Highstage", "use Highstage", or references a Highstage part ID like `IC1008360` directly).
+If the user just asks to "find a datasheet" or "look up a part", assume DOKARKIV.
+
 ## Concurrent writes to schematic.yaml
 
 `schematic.yaml` is the shared workspace file updated by many scripts. When multiple subagents

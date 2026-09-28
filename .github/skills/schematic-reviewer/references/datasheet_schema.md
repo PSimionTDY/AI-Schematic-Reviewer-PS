@@ -1,6 +1,6 @@
 # `datasheet.json` — Canonical Schema Reference
 
-This document defines the canonical structure for `datasheets/<HIGHSTAGE_ID>/datasheet.json`.  
+This document defines the canonical structure for `datasheets/<PART_NUMBER>/datasheet.json`.  
 These files are the persistent AI-extraction cache: once written, subsequent reviews skip re-extraction.
 
 > **Note:** Fields extracted from datasheets may not always be present. Agents should only populate fields they found explicitly in the datasheet — never infer or guess values for these fields. Missing fields are treated as `null` in the database.
@@ -10,7 +10,7 @@ These files are the persistent AI-extraction cache: once written, subsequent rev
 ## Overview
 
 Each `datasheet.json` is written by the per-IC review agent (Step 4c) the first time it reads a datasheet.  
-The file resides at `datasheets/<HIGHSTAGE_ID>/datasheet.json` in the repository root.
+The file resides at `datasheets/<PART_NUMBER>/datasheet.json` in the repository root.
 
 ```
 datasheets/
@@ -50,7 +50,7 @@ These fields MUST be present in every `datasheet.json`, regardless of `ic_catego
 ```jsonc
 {
   // ── Identity ──────────────────────────────────────────────────────────────
-  "highstage_id":      "IC1018063",          // string — Highstage part number, e.g. IC1018063
+  "part_number":      "IC1018063",          // string — internal part number, e.g. IC1018063
   "mfg_part_number":   "LTC3626",            // string — manufacturer part number (base, no suffix)
   "orderable_part_number": "LTC3626EUFD#PBF",// string | null — full orderable MPN
   "manufacturer":      "Analog Devices",     // string | null
@@ -459,7 +459,7 @@ The per-IC review agent reads `notes[]` and checks each one against the schemati
 
 ```json
 {
-  "highstage_id": "IC1018063",
+  "part_number": "IC1018063",
   "mfg_part_number": "LTC3626",
   "description": "18V, 2.5A Synchronous Step-Down Regulator",
   "packages": ["4mm × 4mm QFN-20"],
@@ -507,7 +507,7 @@ The per-IC review agent reads `notes[]` and checks each one against the schemati
 
 ```json
 {
-  "highstage_id": "IC1017820",
+  "part_number": "IC1017820",
   "mfg_part_number": "TPS25947",
   "description": "2.7–23 V, 5.5 A eFuse with Reverse Polarity Protection",
   "packages": ["QFN-10 2 mm × 2 mm"],
@@ -555,7 +555,7 @@ The per-IC review agent reads `notes[]` and checks each one against the schemati
 
 ```json
 {
-  "highstage_id": "IC1012118",
+  "part_number": "IC1012118",
   "mfg_part_number": "SHT30",
   "description": "Humidity and Temperature Sensor, I2C, ±2%RH, ±0.2°C",
   "packages": ["DFN-8 2.5 mm × 2.5 mm"],
@@ -634,7 +634,7 @@ The per-IC review agent reads `notes[]` and checks each one against the schemati
 
 Older reviews may have `datasheets/<ID>/pins.json` files written by the heuristic PDF extractor.  
 Scripts that read `datasheet.json` MUST fall back to `pins.json` (using its `pins` section) when `datasheet.json` is absent.  
-The `pins.json` format is a subset: `{ "highstage_id", "mfg_part_number", "source_pdf", "extracted_at", "pins": { "<num>": { "name", "type" } } }`.
+The `pins.json` format is a subset: `{ "part_number", "mfg_part_number", "source_pdf", "extracted_at", "pins": { "<num>": { "name", "type" } } }`.
 
 When reading from `pins.json`, treat all data as `"extraction_method": "heuristic"` and low-confidence.
 

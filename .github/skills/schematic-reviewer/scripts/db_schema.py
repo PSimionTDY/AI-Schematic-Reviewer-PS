@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS components (
     value           TEXT,
     package         TEXT,
     mfg_part_number TEXT,
-    highstage_id    TEXT,
+    part_number     TEXT,
     role            TEXT,
     dnp             INTEGER DEFAULT 0,
     verified        INTEGER DEFAULT 0,
@@ -156,6 +156,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (2, "ALTER TABLE nets ADD COLUMN voltage_min REAL"),
     (3, "ALTER TABLE nets ADD COLUMN voltage_max REAL"),
     (4, "UPDATE nets SET type = 'unknown' WHERE type = 'signal' AND confidence IN ('unknown', 'hint')"),
+    (5, "ALTER TABLE components ADD COLUMN part_number TEXT"),
 ]
 
 _LATEST_SCHEMA_VERSION = MIGRATIONS[-1][0] if MIGRATIONS else 1

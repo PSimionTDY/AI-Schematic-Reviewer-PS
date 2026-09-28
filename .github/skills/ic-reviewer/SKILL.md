@@ -24,12 +24,8 @@ before doing any pin analysis.
 **How to determine the package:**
 
 1. Check `datasheet.json` for an `active_package` or `package_determination` field — if present, use it.
-2. Otherwise, look up the `Mfg1Partnumber` from Highstage for the component's `highstage_id`:
-   ```powershell
-   $resp = Invoke-WebRequest -Uri "https://highstage/ts/ts/search.aspx?t=part&o={highstage_id}&_format=xml_raw&_columns=o%3BMfg1Partnumber%3Bdescription" -UseDefaultCredentials -UseBasicParsing
-   $resp.Content
-   ```
-3. Parse the package suffix from `Mfg1Partnumber` (e.g. `TS3USB30E**DGS**R` → DGS = VSSOP-10).
+2. Otherwise, look up the ordered manufacturer part number (`mfg_part_number`) recorded in the component's context JSON.
+3. Parse the package suffix from `mfg_part_number` (e.g. `TS3USB30E**DGS**R` → DGS = VSSOP-10).
    Common TI package suffixes: `DGS`=VSSOP-10, `DGK`=VSSOP-8, `D`=SOIC, `RSW`/`RGE`=UQFN, `PW`=TSSOP.
    Other manufacturers use different codes — match against the package table in the datasheet.
 4. Record your determination in `datasheet.json` under `active_package` and `package_determination`
@@ -63,7 +59,7 @@ Do NOT proceed with pin analysis based on assumed pinouts.
      ```
      Use `--info` first to check page count. Use `--pages 1-30` to limit very long PDFs.
      LiteParse uses OCR by default; add `--no-ocr` for faster extraction on text-layer PDFs, `--dpi 300` for higher quality.
-  3. From the extracted text, write `datasheets/{highstage_id}/datasheet.json`
+  3. From the extracted text, write `datasheets/{part_number}/datasheet.json`
      following the schema in `.github/skills/schematic-reviewer/references/datasheet_schema.md`.
   4. Write the file — all future reviews of this part will use it instead of re-reading the PDF.
 
@@ -265,7 +261,7 @@ write_issues('reviews/<SCH_ID>/REVIEW/review.db', [
         'pin': '18',
         'refs': [
             {'type': 'component', 'ref': 'U400', 'pin': '18'},
-            {'type': 'datasheet', 'highstage_id': 'IC1018625', 'page': 12, 'section': 'Table 7-2: Truth Table'},
+            {'type': 'datasheet', 'part_number': 'T1018625', 'page': 12, 'section': 'Table 7-2: Truth Table'},
         ],
     },
 ])

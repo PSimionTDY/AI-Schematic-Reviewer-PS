@@ -1,9 +1,13 @@
 ---
 name: highstage
-description: Access the Highstage internal parts database to download component datasheets or extract BOM data. Use this skill whenever the user wants to look up a part, download a datasheet PDF, fetch BOM information from Highstage, or batch-download datasheets for components in a design. Trigger even when the user doesn't say "Highstage" explicitly — phrases like "get the datasheet for IC1008360", "download all IC datasheets", "fetch the BOM", or "look up part specs" should all trigger this skill.
+description: Access the Highstage internal parts database to download component datasheets or extract BOM data. This skill is NOT the default datasheet source for this project (that is the `dokarkiv` skill) — only use this skill when the user EXPLICITLY asks for Highstage (e.g. says "check Highstage", "use Highstage", or references a Highstage-style part ID like `IC1008360` directly). Do not trigger this skill from generic phrases like "get the datasheet" or "look up part specs" — those should use `dokarkiv` instead.
 ---
 
 # Highstage Skill
+
+> **Not the default datasheet source.** For general datasheet/part-info lookups, use the
+> `dokarkiv` skill instead (`\\SE-ARN-FS2\Vol1\DOKARKIV`). Only use this skill when the user
+> explicitly asks for Highstage.
 
 Provides access to Teledyne's internal Highstage parts database. Use the bundled scripts to download schematics, probe datasheet access, and extract/enrich BOM data without needing a browser.
 

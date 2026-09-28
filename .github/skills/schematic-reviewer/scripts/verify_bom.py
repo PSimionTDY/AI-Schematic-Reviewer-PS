@@ -4,7 +4,7 @@ verify_bom.py — Check the BOM (components table) in review.db for completeness
 
 Checks performed for each non-DNP component:
   - Missing manufacturer part number  (minor)
-  - Missing Highstage ID              (minor)
+  - Missing internal part number      (minor)
   - Missing value for passives        (minor)
   - Missing package/footprint         (minor)
   - Unknown component type            (info)
@@ -58,7 +58,7 @@ def verify_bom(db_path: str | Path) -> dict:
     conn = get_connection(db_path)
     try:
         rows = conn.execute(
-            "SELECT ref, comp_type, value, package, mfg_part_number, highstage_id, dnp "
+            "SELECT ref, comp_type, value, package, mfg_part_number, part_number, dnp "
             "FROM components"
         ).fetchall()
 
@@ -88,7 +88,7 @@ def verify_bom(db_path: str | Path) -> dict:
         value = row["value"]
         package = row["package"]
         mfg = row["mfg_part_number"]
-        hid = row["highstage_id"]
+        hid = row["part_number"]
         dnp = row["dnp"]
 
         if dnp:
@@ -114,17 +114,17 @@ def verify_bom(db_path: str | Path) -> dict:
                 "source": "verify_bom",
             })
 
-        # Missing Highstage ID
+        # Missing internal part number
         if _empty(hid):
             issues.append({
                 "severity": "minor",
                 "type": "bom",
-                "summary": f"{ref}: missing Highstage ID",
+                "summary": f"{ref}: missing part number",
                 "description": (
-                    f"Component {ref}{display} has no Highstage part ID in the schematic. "
+                    f"Component {ref}{display} has no internal part number in the schematic. "
                     "Datasheet lookup and procurement traceability will be unavailable."
                 ),
-                "resolution": "Add the Highstage part ID (e.g. IC1001234) to the schematic component properties.",
+                "resolution": "Add the internal part number (e.g. T1001234) to the schematic component properties.",
                 "ref": ref,
                 "source": "verify_bom",
             })
@@ -223,7 +223,7 @@ def _print_summary(result: dict) -> None:
     issues_written = result["issues_written"]
 
     missing_mfg     = sum(1 for i in issues if "missing manufacturer part number" in i["summary"])
-    missing_hid     = sum(1 for i in issues if "missing Highstage ID" in i["summary"])
+    missing_hid     = sum(1 for i in issues if "missing part number" in i["summary"])
     missing_value   = sum(1 for i in issues if "missing value" in i["summary"])
     missing_pkg     = sum(1 for i in issues if "missing package/footprint" in i["summary"])
     unknown_type    = sum(1 for i in issues if "component type unknown" in i["summary"])
@@ -233,7 +233,7 @@ def _print_summary(result: dict) -> None:
     if missing_mfg:
         print(f"  {missing_mfg} missing mfg_part_number")
     if missing_hid:
-        print(f"  {missing_hid} missing highstage_id")
+        print(f"  {missing_hid} missing part_number")
     if missing_value:
         print(f"  {missing_value} missing value (passives)")
     if missing_pkg:

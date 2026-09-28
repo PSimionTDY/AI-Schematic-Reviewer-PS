@@ -15,6 +15,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import altium_parser
+import flatnet_parser
 
 
 # Map Allegro PINUSE values to canonical pin directions
@@ -38,6 +39,11 @@ def is_altium_folder(folder: Path) -> bool:
     if list(folder.glob('*.PrjPcb')):
         return True
     return altium_parser.find_altium_net(folder) is not None
+
+
+def is_flatnet_folder(folder: Path) -> bool:
+    """Return True if folder contains a FlatNet-format .txt netlist export."""
+    return flatnet_parser.find_flatnet_file(folder) is not None
 
 
 def detect_format(allegro_dir: Path) -> str:
@@ -303,11 +309,11 @@ def parse_pst_format(allegro_dir: Path) -> dict:
 
 def parse(schematic_folder: str | Path) -> dict:
     """
-    Parse a schematic folder. Auto-detects Altium or Allegro export format.
+    Parse a schematic folder. Auto-detects Altium, FlatNet, or Allegro export format.
 
     Returns:
         {
-            'format': 'altium' | 'view' | 'pst',
+            'format': 'altium' | 'flatnet' | 'view' | 'pst',
             'nets': {net_name: {'connections': [{ref, pin, direction, func_des}]}},
             'components': {ref: {device_type, part_name, value, mfg, mpn, package,
                                   func_des, sheet, pins: {pin: {net, direction}}}}
@@ -317,6 +323,9 @@ def parse(schematic_folder: str | Path) -> dict:
 
     if is_altium_folder(folder):
         return altium_parser.parse(folder)
+
+    if is_flatnet_folder(folder):
+        return flatnet_parser.parse(folder)
 
     allegro_dir = folder / 'allegro' if (folder / 'allegro').exists() else folder
 

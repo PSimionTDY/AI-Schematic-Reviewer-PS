@@ -392,11 +392,11 @@ def load_variants(review_dir: Path) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Highstage ID lookup (from BOM if available)
+# Internal part number lookup (from BOM if available)
 # ---------------------------------------------------------------------------
 
 def load_bom_ids(review_dir: Path) -> dict:
-    """Try to find highstage_id for components from BOM files in REVIEW/."""
+    """Try to find the internal part_number for components from BOM files in REVIEW/."""
     ids = {}
     for bom_file in review_dir.glob('*.csv'):
         try:
@@ -405,7 +405,7 @@ def load_bom_ids(review_dir: Path) -> dict:
                 reader = csv.DictReader(f)
                 for row in reader:
                     ref = row.get('Ref Des', row.get('REFDES', row.get('Reference', ''))).strip()
-                    part_id = row.get('Part ID', row.get('PART_ID', row.get('Highstage ID', ''))).strip()
+                    part_id = row.get('Part ID', row.get('PART_ID', row.get('Part Number', ''))).strip()
                     if ref and part_id:
                         ids[ref] = part_id
         except Exception:
@@ -679,7 +679,53 @@ def enrich_from_pdf(comps_out: dict, pdf_path: Path) -> int:
     return enriched
 
 
-def enrich_from_altium_bom(comps_out: dict, export_folder: Path) -> int:
+def enrich_from_flat_bom(comps_out: dict, export_folder: Path) -> int:
+    """
+    Enrich comps_out in-place from a flat ERP-style BOM XLSX (Ref.Des/Part Label/Artikelnummer).
+    Sets: part_number, value/description, dnp.
+    Returns the number of components enriched.
+    """
+    from flat_bom_reader import read_flat_bom
+    print(f"Reading flat BOM from {export_folder.name}...")
+    component_map = read_flat_bom(export_folder)
+    print(f"  Parsed {len(component_map)} BOM entries")
+
+    enriched = 0
+    for ref, props in component_map.items():
+        if ref not in comps_out:
+            continue
+        comp = comps_out[ref]
+        changed = False
+
+        try:
+            pn = props.get('part_number', '')
+            if pn and not comp.get('part_number'):
+                comp['part_number'] = pn
+                changed = True
+
+            value = props.get('value', '')
+            if value and not comp.get('value'):
+                comp['value'] = value
+                changed = True
+
+            desc = props.get('description', '')
+            if desc and not comp.get('description'):
+                comp['description'] = desc
+                changed = True
+
+            if props.get('dnp'):
+                comp['dnp'] = True
+                changed = True
+        except Exception:
+            pass
+
+        if changed:
+            enriched += 1
+
+    return enriched
+
+
+
     """
     Enrich comps_out in-place from Altium XLSX BOMs.
     Sets: part_number (highstage), mfg_part_number, manufacturer, mfg, mpn.
@@ -938,7 +984,7 @@ def build_yaml(schematic_folder: Path, output_path: Path, pdf_path: Path | None 
             'mfg':            comp['mfg'],
             'mpn':            comp['mpn'],
             'package':        comp['package'],
-            'highstage_id':   bom_ids.get(ref, ''),
+            'part_number':    bom_ids.get(ref, ''),
             'comp_type':      ctype,
             'role':           roles.get(ref),
             'verified':       auto_verified,
@@ -971,13 +1017,19 @@ def build_yaml(schematic_folder: Path, output_path: Path, pdf_path: Path | None 
     if resolved:
         print(f"  Net voltages resolved via pull-up tracing: {resolved}")
 
-    # --- PDF annotation enrichment (Allegro) or BOM enrichment (Altium) ---
+    # --- PDF annotation enrichment (Allegro) or BOM enrichment (Altium/FlatNet) ---
     if data['format'] == 'altium':
         try:
             enriched = enrich_from_altium_bom(comps_out, schematic_folder)
-            print(f"  Altium BOM enrichment: {enriched} components got MPN/manufacturer/Highstage data")
+            print(f"  Altium BOM enrichment: {enriched} components got MPN/manufacturer/part number data")
         except Exception as exc:
             print(f"  WARNING: Altium BOM enrichment failed: {exc}")
+    elif data['format'] == 'flatnet':
+        try:
+            enriched = enrich_from_flat_bom(comps_out, schematic_folder)
+            print(f"  Flat BOM enrichment: {enriched} components got part number/value data")
+        except Exception as exc:
+            print(f"  WARNING: Flat BOM enrichment failed: {exc}")
     else:
         effective_pdf = pdf_path or find_schematic_pdf(schematic_folder)
         if effective_pdf and effective_pdf.exists():
@@ -1115,7 +1167,7 @@ def build_db(schematic_folder: Path, db_path: Path, pdf_path: Path | None = None
             'mfg':           comp['mfg'],
             'mpn':           comp['mpn'],
             'package':       comp['package'],
-            'highstage_id':  bom_ids.get(ref, ''),
+            'part_number':   bom_ids.get(ref, ''),
             'comp_type':     ctype,
             'role':          roles.get(ref),
             'verified':      auto_verified,
@@ -1147,13 +1199,19 @@ def build_db(schematic_folder: Path, db_path: Path, pdf_path: Path | None = None
     if resolved:
         print(f"  Net voltages resolved via pull-up tracing: {resolved}")
 
-    # --- PDF annotation enrichment (Allegro) or BOM enrichment (Altium) ---
+    # --- PDF annotation enrichment (Allegro) or BOM enrichment (Altium/FlatNet) ---
     if data['format'] == 'altium':
         try:
             enriched = enrich_from_altium_bom(comps_out, schematic_folder)
-            print(f"  Altium BOM enrichment: {enriched} components got MPN/manufacturer/Highstage data")
+            print(f"  Altium BOM enrichment: {enriched} components got MPN/manufacturer/part number data")
         except Exception as exc:
             print(f"  WARNING: Altium BOM enrichment failed: {exc}")
+    elif data['format'] == 'flatnet':
+        try:
+            enriched = enrich_from_flat_bom(comps_out, schematic_folder)
+            print(f"  Flat BOM enrichment: {enriched} components got part number/value data")
+        except Exception as exc:
+            print(f"  WARNING: Flat BOM enrichment failed: {exc}")
     else:
         effective_pdf = pdf_path or find_schematic_pdf(schematic_folder)
         if effective_pdf and effective_pdf.exists():
@@ -1233,13 +1291,13 @@ def build_db(schematic_folder: Path, db_path: Path, pdf_path: Path | None = None
         func_des = comp.get('func_des') or schematic_ref.get('func_des')
         sheet = comp.get('sheet') or schematic_ref.get('sheet')
         conn.execute("""INSERT OR REPLACE INTO components
-            (ref, comp_type, value, package, mfg_part_number, highstage_id,
+            (ref, comp_type, value, package, mfg_part_number, part_number,
              role, dnp, verified, func_des, sheet,
              rated_voltage, tolerance, power_rating, dielectric, temp_min_c, temp_max_c)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (ref, comp.get('comp_type'), comp.get('value'), comp.get('package'),
              comp.get('mpn') or comp.get('mfg_part_number'),
-             comp.get('highstage_id'),
+             comp.get('part_number'),
              comp.get('role'),
              1 if comp.get('dnp') else 0,
              1 if comp.get('verified') else 0,

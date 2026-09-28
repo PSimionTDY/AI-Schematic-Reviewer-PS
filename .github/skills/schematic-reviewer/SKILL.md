@@ -5,7 +5,7 @@ description: Perform a structured AI-assisted review of a Cadence Allegro schema
 
 # Schematic Reviewer Skill
 
-Guides Claude through a complete, systematic schematic review using the Allegro parser, Highstage datasheet downloads, and the structured checklist.
+Guides Claude through a complete, systematic schematic review using the Allegro parser, DOKARKIV datasheet lookups, and the structured checklist.
 
 Read `references/review_checklist.md` now — it defines every check to perform and in what order.
 
@@ -95,7 +95,7 @@ voltages before the next tier starts.
 | Stage | Script(s) | Writes to review.db | Order |
 |-------|-----------|---------------------|-------|
 | `build` | `schematic_builder.py` | nets, components, pins | first |
-| `datasheets` | `batch_downloader.py` | datasheet_fields on components | after build |
+| `datasheets` | `find_datasheet.py` (dokarkiv skill) | datasheet_fields on components | after build |
 | `ic_review T1` | power-gating agents | issues, enrichments (output voltages) | after datasheets |
 | `ic_review T2` | DC-DC converter agents | issues, enrichments | after T1 enrichment |
 | `ic_review T3` | LDO agents | issues, enrichments | after T2 enrichment |
@@ -174,13 +174,7 @@ reviews/<SCH_ID>/allegro/   ← Allegro export files (pstxnet.dat or pinView.dat
 
 **If it exists** → proceed to Step 1.
 
-**If it does not exist** → fetch it from Highstage using the downloader. Do NOT ask the user to locate it manually. Do NOT construct or guess UNC paths — schematics can be in different workspaces (`PURCHASE_SPEC`, `RP3`, etc.) and only the search API knows the correct path. Do NOT scan the file share recursively.
-
-```bash
-python .github/skills/highstage/scripts/schematic_downloader.py <SCH_ID> --dest reviews/
-```
-
-The downloader queries the Highstage search API via PowerShell SSPI to get the exact folder path, then copies from UNC. If it fails, it reports the error clearly and asks the user to copy manually.
+**If it does not exist** → ask the user to provide the schematic export files (Allegro `pstxnet.dat`/`pstchip.dat` or `View.dat`) and the schematic PDF, and place them under `reviews/<SCH_ID>/allegro/`. This repository no longer fetches schematics automatically from any external system.
 
 ### Step 1 — Parse and build review.db
 
@@ -190,28 +184,11 @@ python .github/skills/schematic-parser/scripts/schematic_builder.py reviews/<SCH
 
 This auto-detects the Allegro format (View.dat or pst*.dat), parses all netlist data, enriches with PDF annotations (voltage ratings, MPN, tolerance), and writes `reviews/<SCH_ID>/REVIEW/review.db` (marks pipeline stage `build` done). Initialises all pipeline stages in the DB.
 
-### Step 1c — Fetch BOM from Highstage PCB_ASSY
+### Step 1c — Load BOM (part numbers)
 
-**Do this before downloading datasheets** — it populates `highstage_id` on every component, which `batch_downloader.py` needs.
+**Do this before downloading datasheets** — it populates `part_number` on every component, which the DOKARKIV datasheet finder needs.
 
-```bash
-python .github/skills/highstage/scripts/fetch_pcb_assy_bom.py reviews/<SCH_ID>/REVIEW/review.db
-```
-
-This script:
-1. Searches Highstage for PCB_ASSYs that reference this schematic (`_references=<SCH major rev>`)
-2. Fetches each line item from the PCB_ASSY BOM (`_parenttype=part&_parent=<ASSY_ID>`)
-3. Reads `ts_ref.pos` (ref-des list) and `name` (Highstage part ID) per line
-4. Marks `XPCB1007755` positions as DNP (no-mount)
-5. Runs a sanity check: coverage ≥ 85%, flags missing/extra refs
-6. Writes `highstage_id` and `dnp` flags back to `review.db`
-
-**If the BOM check fails** (coverage < 85%, BOM is empty, or no PCB_ASSY found), the script will
-print a warning. In that case, ask the user:
-> *"The BOM for `<SCH_ID>` could not be verified against Highstage. Could you provide the correct
-> PCB_ASSY ID or a BOM CSV with ref-des and Highstage ID columns?"*
-
-Use `--list-assys` to show all linked assemblies, `--assy <ID>` to pick a specific one.
+`schematic_builder.py` (Step 1) already reads any BOM CSV present in `reviews/<SCH_ID>/REVIEW/` and populates `part_number` on matching components automatically (see `load_bom_ids` in `schematic_builder.py`). If no BOM CSV is present, ask the user to provide one with ref-designator and internal part number columns (e.g. `Ref Des`, `Part ID`), or to fill in part numbers directly on the components in `review.db`.
 
 ### Step 1b — Confirm voltage rails (interactive)
 
@@ -268,25 +245,23 @@ Only needed if the schematic has multiple PCB assembly variants. Detects DNP com
 
 Open the schematic PDF (`reviews/<SCH_ID>/<SCH_ID>.pdf`) and extract engineering notes (see checklist Section 7).
 
-### Step 4 — Download datasheets (ICs, transistors, diodes)
+### Step 4 — Find datasheets (ICs, transistors, diodes)
 
-Datasheets are cached at **`datasheets/<HIGHSTAGE_ID>/`** in the repo root — shared across all schematic reviews. Download for all reviewable component types: ICs, transistors (GaN FETs, MOSFETs, BJTs), and diodes (including bootstrap and TVS diodes). Highstage uses type-prefixed part IDs: `IC…` for ICs, `DIS…` for discrete transistors, `DIO…` for diodes.
+Datasheets are cached at **`datasheets/<PART_NUMBER>/`** in the repo root — shared across all schematic reviews. Look up datasheets for all reviewable component types: ICs, transistors (GaN FETs, MOSFETs, BJTs), and diodes (including bootstrap and TVS diodes). Internal part numbers use a letter prefix followed by digits (e.g. `T19200`); the DOKARKIV file share folder uses only the numeric portion (`19200`).
 
-Batch-download all reviewable parts in one call:
+Batch-copy all reviewable parts in one call:
 ```bash
-python .github/skills/highstage/scripts/batch_downloader.py \
-    --db reviews/<SCH_ID>/REVIEW/review.db \
-    --filter-type ic,transistor,diode,zener \
+python .github/skills/dokarkiv/scripts/find_datasheet.py \
+    --bom reviews/<SCH_ID>/REVIEW/bom.csv \
+    --filter "U,IC" \
     --output datasheets/
 ```
 
-Or download a single part (any type):
+Or copy a single part's datasheet (any type):
 ```bash
-python .github/skills/highstage/scripts/highstage_downloader.py <PART_NUMBER> --output datasheets/
-# Examples:
-#   IC1018625   (LMG1210 gate driver)
-#   DIS1019629  (EPC2019 GaN FET)
-#   DIO1019495  (RB168VYM150 bootstrap diode)
+python .github/skills/dokarkiv/scripts/find_datasheet.py <PART_NUMBER> --output datasheets/
+# Example:
+#   T19200
 ```
 
 **Do NOT use `PINUSE` from the Allegro `chipsview.dat` — these values are unreliable.** The datasheet is the authoritative source for pin types (VCC, GND, input, output, open-drain, etc.).
@@ -302,7 +277,7 @@ For each component datasheet, extract the key parameters and cross-reference aga
 
 **`datasheet.json` — persistent AI extraction cache**
 
-When a datasheet is downloaded to `datasheets/<HIGHSTAGE_ID>/`, check whether `datasheets/<HIGHSTAGE_ID>/datasheet.json` already exists:
+When a datasheet is copied to `datasheets/<PART_NUMBER>/`, check whether `datasheets/<PART_NUMBER>/datasheet.json` already exists:
 
 - **If `datasheet.json` exists** → use it directly. All scripts (`verify_ic_pins.py`, `prepare_ic_context.py`) read from it automatically. Skip re-extraction.
 - **If `datasheet.json` does not exist** → the per-component review agent (Step 4c) will write it after reading the PDF. Once written, all subsequent reviews for that part use the cached file instead of re-reading the PDF.
@@ -353,8 +328,8 @@ tier — it is always safe to review power before signal.
 
 #### Grouping agents
 
-**Launch one agent per unique Highstage ID** (not one per instance). For example, if `TPS25961DRVR`
-(IC1020431) appears as U5, U6, U12, U14, U15, U4300, launch a single agent with all six context
+**Launch one agent per unique part number** (not one per instance). For example, if `TPS25961DRVR`
+(T1020431) appears as U5, U6, U12, U14, U15, U4300, launch a single agent with all six context
 JSONs. The agent reviews all instances, writing one issue per ref where relevant.
 
 #### Choosing the agent skill
@@ -365,7 +340,7 @@ JSONs. The agent reviews all instances, writing one issue per ref where relevant
 
 Provide each agent with:
 - The full contents of `.github/skills/<reviewer>/SKILL.md` as its system prompt
-- All context JSON paths for that Highstage ID: `REVIEW/ic_contexts/{ref}.json`
+- All context JSON paths for that part number: `REVIEW/ic_contexts/{ref}.json`
 - The schematic ID, refs, value, package, MPN from `_index.json`
 
 ### Step 4d — Crystal agent review (passive crystals only)
@@ -376,7 +351,7 @@ Passive crystals are treated like ICs — one `general-purpose` sub-agent per co
 
 For each crystal (XTAL) in `review.db`:
 - Read the component's context JSON (pins, nets, connected components)
-- If a datasheet is available (from `datasheets/<highstage_id>/`), read it
+- If a datasheet is available (from `datasheets/<part_number>/`), read it
 - Check:
   1. Load capacitors present on both XTAL pins, value matches datasheet spec (C_L formula)
   2. Oscillator type correct (XTAL vs active oscillator — check if power pin present)
@@ -424,7 +399,7 @@ venv\Scripts\python.exe .github\skills\schematic-reviewer\scripts\check_price_av
 venv\Scripts\python.exe .github\skills\schematic-reviewer\scripts\check_obsolescence.py reviews/<SCH_ID>/REVIEW/review.db
 ```
 
-`check_price_availability.py` queries Highstage for lifecycle status (NRND, discontinued, last-time-buy) for every active component with a `highstage_id`. `check_obsolescence.py` applies offline heuristics (known bad part-number patterns, through-hole indicators, missing MPN). Both write issues to `review.db`.
+`check_price_availability.py` is a no-op stub — it previously queried Highstage for lifecycle status (NRND, discontinued, last-time-buy) but that data source is no longer used and is not available from DOKARKIV. `check_obsolescence.py` applies offline heuristics (known bad part-number patterns, through-hole indicators, missing MPN). Both write issues to `review.db`.
 
 **`bom_check` track — run in parallel from `build`:**
 
@@ -432,7 +407,7 @@ venv\Scripts\python.exe .github\skills\schematic-reviewer\scripts\check_obsolesc
 venv\Scripts\python.exe .github\skills\schematic-reviewer\scripts\verify_bom.py reviews/<SCH_ID>/REVIEW/review.db
 ```
 
-Flags missing MPNs, missing Highstage IDs, missing values on passives, missing packages, and unknown component types. Writes `minor` / `info` issues to `review.db`.
+Flags missing MPNs, missing internal part numbers, missing values on passives, missing packages, and unknown component types. Writes `minor` / `info` issues to `review.db`.
 
 **`power_estimate` track — run AFTER enrichment:**
 
@@ -592,13 +567,13 @@ Reads `board_temp_min_c` / `board_temp_max_c` from the `meta` table (defaults: �
 python .github/skills/schematic-reviewer/scripts/check_price_availability.py reviews/<SCH_ID>/REVIEW/review.db
 python .github/skills/schematic-reviewer/scripts/check_obsolescence.py reviews/<SCH_ID>/REVIEW/review.db
 ```
-Run independently of each other. Both write issues to `review.db`.
+Run independently of each other. Both write issues to `review.db`. `check_price_availability.py` is a no-op stub since lifecycle data is no longer available (Highstage removed).
 
 ### 5. BOM completeness check (parallel from build)
 ```bash
 python .github/skills/schematic-reviewer/scripts/verify_bom.py reviews/<SCH_ID>/REVIEW/review.db
 ```
-Flags missing MPNs, Highstage IDs, values, packages, and unknown component types. Writes `minor` / `info` issues.
+Flags missing MPNs, internal part numbers, values, packages, and unknown component types. Writes `minor` / `info` issues.
 
 ### 6. Power consumption estimate (after enrichment)
 ```bash

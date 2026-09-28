@@ -24,7 +24,7 @@ Active oscillators have `comp_type: oscillator` or `comp_type: clock` in `schema
      ```
      Use `--info` first to check page count. Use `--pages 1-20` for long datasheets.
      Add `--no-ocr` for faster extraction on text-layer PDFs.
-  2. Write `datasheets/{highstage_id}/datasheet.json` following `.github/skills/schematic-reviewer/references/datasheet_schema.md`.
+  2. Write `datasheets/{part_number}/datasheet.json` following `.github/skills/schematic-reviewer/references/datasheet_schema.md`.
 
 **If `datasheet_json_path` is not null**: read it with the `view` tool.
 

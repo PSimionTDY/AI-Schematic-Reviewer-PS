@@ -69,16 +69,24 @@ def get_connection(db_path: Path | str, timeout: int = 30) -> sqlite3.Connection
 # ---------------------------------------------------------------------------
 
 def _next_issue_id(conn: sqlite3.Connection) -> str:
-    """Return the next available ISS_NNN identifier."""
-    row = conn.execute("SELECT MAX(id) FROM issues").fetchone()
-    current = row[0] if row and row[0] else None
-    if current and current.startswith("ISS_"):
-        try:
-            n = int(current[4:])
-            return f"ISS_{n + 1:03d}"
-        except ValueError:
-            pass
-    return "ISS_001"
+    """Return the next available ISS_NNN identifier.
+
+    Compares numerically (not lexicographically) so IDs beyond 3 digits
+    (e.g. ISS_1000) don't collide with earlier ones like ISS_999 -- a plain
+    ``MAX(id)`` string comparison would treat "ISS_999" as greater than
+    "ISS_1000" since '9' > '1' at the first differing character.
+    """
+    row = conn.execute("SELECT id FROM issues").fetchall()
+    max_n = 0
+    for (issue_id,) in row:
+        if issue_id and issue_id.startswith("ISS_"):
+            try:
+                n = int(issue_id[4:])
+                if n > max_n:
+                    max_n = n
+            except ValueError:
+                continue
+    return f"ISS_{max_n + 1:03d}"
 
 
 def _serialise(value: Any) -> Any:

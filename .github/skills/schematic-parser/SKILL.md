@@ -225,7 +225,7 @@ components:
 4. **Before trusting the PDF as ground truth, run `pdf_consistency_check.py`** (see PDF Consistency Checks below).
 5. After parsing, use the connection finder for targeted searches.
 6. For a full review, read the PDF alongside the netlist data.
-7. When a component appears in connections but is unfamiliar, note its part ID for datasheet lookup via the `highstage` skill.
+7. When a component appears in connections but is unfamiliar, note its part number for datasheet lookup via the `dokarkiv` skill.
 
 ## Variant DNP Extraction
 

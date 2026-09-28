@@ -74,12 +74,12 @@ def find_repo_root() -> Path:
 # Datasheet helpers
 # ---------------------------------------------------------------------------
 
-def find_datasheet_path(highstage_id: str, mpn: str, repo_root: Path) -> str | None:
+def find_datasheet_path(part_number: str, mpn: str, repo_root: Path) -> str | None:
     """Return path (relative to repo root, forward slashes) to the best matching
     datasheet PDF, or None if no datasheet folder or no PDFs are found."""
-    if not highstage_id:
+    if not part_number:
         return None
-    ds_dir = repo_root / "datasheets" / highstage_id
+    ds_dir = repo_root / "datasheets" / part_number
     if not ds_dir.exists():
         return None
     pdfs = list(ds_dir.glob("*.pdf"))
@@ -96,19 +96,19 @@ def find_datasheet_path(highstage_id: str, mpn: str, repo_root: Path) -> str | N
 
 
 # ---------------------------------------------------------------------------
-# Pin table cache: datasheets/<HIGHSTAGE_ID>/datasheet.json (AI-extracted)
+# Pin table cache: datasheets/<PART_NUMBER>/datasheet.json (AI-extracted)
 # ---------------------------------------------------------------------------
 
-def find_datasheet_json_path(highstage_id: str, repo_root: Path) -> Path | None:
+def find_datasheet_json_path(part_number: str, repo_root: Path) -> Path | None:
     """Return the Path to datasheet.json if it exists, else None."""
-    if not highstage_id:
+    if not part_number:
         return None
-    p = repo_root / "datasheets" / highstage_id / "datasheet.json"
+    p = repo_root / "datasheets" / part_number / "datasheet.json"
     return p if p.exists() else None
 
 
 def load_or_extract_pins(
-    highstage_id: str,
+    part_number: str,
     mpn: str,
     repo_root: Path,
 ) -> tuple[dict[str, dict], str | None, str | None]:
@@ -116,17 +116,17 @@ def load_or_extract_pins(
 
     pin_map maps pin number strings to {"name": ..., "type": ...}.
 
-    Only uses datasheets/<id>/datasheet.json (AI-extracted, high-confidence).
+    Only uses datasheets/<part_number>/datasheet.json (AI-extracted, high-confidence).
     Heuristic extraction is intentionally removed — it produces garbage output.
     If no datasheet.json exists, the IC agent (Step 4c) will read the PDF and
     write datasheet.json as part of its review.
 
     Returns ({}, None, None) when no datasheet.json is available.
     """
-    if not highstage_id:
+    if not part_number:
         return {}, None, None
 
-    ds_dir = repo_root / "datasheets" / highstage_id
+    ds_dir = repo_root / "datasheets" / part_number
     if not ds_dir.exists():
         return {}, None, None
 
@@ -140,15 +140,15 @@ def load_or_extract_pins(
             for pnum, pdata in pins_section.items():
                 pin_type = pdata.get("direction") or pdata.get("type") or "unknown"
                 pin_map[str(pnum)] = {"name": pdata.get("name", ""), "type": pin_type}
-            print(f"  [{highstage_id}] using datasheet.json ({len(pin_map)} pins, AI-extracted)")
+            print(f"  [{part_number}] using datasheet.json ({len(pin_map)} pins, AI-extracted)")
             return pin_map, str(datasheet_json_path.relative_to(repo_root)).replace("\\", "/"), "ai_extracted"
         except Exception as exc:
             print(f"  [warn] could not read {datasheet_json_path}: {exc}")
 
     # No datasheet.json — IC agent will extract on first review
     pdfs = list(ds_dir.glob("*.pdf"))
-    label = f"datasheets/{highstage_id}/{pdfs[0].name}" if pdfs else None
-    print(f"  [{highstage_id}] no datasheet.json yet — IC agent will extract from PDF")
+    label = f"datasheets/{part_number}/{pdfs[0].name}" if pdfs else None
+    print(f"  [{part_number}] no datasheet.json yet — IC agent will extract from PDF")
     return {}, label, None
 
 
@@ -331,7 +331,7 @@ def _load_db_into_memory(db_path: Path) -> tuple[str, dict, dict]:
         # components
         components: dict = {}
         for row in conn.execute(
-            "SELECT ref, comp_type, value, package, mfg_part_number, highstage_id, "
+            "SELECT ref, comp_type, value, package, mfg_part_number, part_number, "
             "role, dnp, verified, func_des, sheet FROM components WHERE dnp=0"
         ).fetchall():
             ref = row["ref"]
@@ -340,7 +340,7 @@ def _load_db_into_memory(db_path: Path) -> tuple[str, dict, dict]:
                 "value":           row["value"],
                 "package":         row["package"],
                 "mfg_part_number": row["mfg_part_number"],
-                "highstage_id":    row["highstage_id"],
+                "part_number":     row["part_number"],
                 "role":            row["role"],
                 "dnp":             bool(row["dnp"]),
                 "verified":        bool(row["verified"]),
@@ -444,32 +444,32 @@ def main() -> None:
 
     for ref in ic_refs:
         comp = components[ref]
-        highstage_id = get_ic_part_id(comp) or ""
+        part_number = get_ic_part_id(comp) or ""
         mpn = comp.get("mfg_part_number") or ""
         value = comp.get("value") or ""
         package = comp.get("package") or ""
         schematic_ref = comp.get("schematic_ref") or {}
 
-        datasheet_path = find_datasheet_path(highstage_id, mpn, repo_root)
+        datasheet_path = find_datasheet_path(part_number, mpn, repo_root)
         if datasheet_path:
             n_with_datasheet += 1
         else:
             n_without_datasheet += 1
 
-        ds_json_path_obj = find_datasheet_json_path(highstage_id, repo_root)
+        ds_json_path_obj = find_datasheet_json_path(part_number, repo_root)
         datasheet_json_path = (
             str(ds_json_path_obj.relative_to(repo_root)).replace("\\", "/")
             if ds_json_path_obj else None
         )
 
         ds_pin_map, cached_pins_source, extraction_method = load_or_extract_pins(
-            highstage_id, mpn, repo_root
+            part_number, mpn, repo_root
         )
         cached_pins_ref: str | None
         if datasheet_json_path and ds_pin_map:
             cached_pins_ref = datasheet_json_path
         elif ds_pin_map:
-            cached_pins_ref = f"datasheets/{highstage_id}/pins.json"
+            cached_pins_ref = f"datasheets/{part_number}/pins.json"
         else:
             cached_pins_ref = None
 
@@ -510,7 +510,7 @@ def main() -> None:
             "value": value,
             "package": package,
             "mfg_part_number": mpn,
-            "highstage_id": highstage_id,
+            "part_number": part_number,
             "datasheet_path": datasheet_path,
             "datasheet_json_path": datasheet_json_path,
             "cached_pins": cached_pins_ref,
@@ -526,7 +526,7 @@ def main() -> None:
         index.append({
             "ref": ref,
             "comp_type": comp.get("comp_type"),
-            "highstage_id": highstage_id,
+            "part_number": part_number,
             "sheet": comp.get("sheet"),
             "verified": bool(comp.get("verified")),
             "value": value,

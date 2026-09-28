@@ -2,9 +2,9 @@
 check_obsolescence.py — Flag potentially obsolete components using static
 heuristics and known-bad part-number patterns.
 
-Complements check_price_availability.py: that script checks live Highstage
-data; this script applies offline pattern matching to every active component
-in the DB.
+Complements check_price_availability.py: that script previously checked live
+Highstage data (now a disabled stub); this script applies offline pattern
+matching to every active component in the DB.
 
 Checks performed
 ----------------

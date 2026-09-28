@@ -2,17 +2,17 @@
 """
 Verify IC pin assignments against manufacturer datasheets.
 
-For each unique IC in the schematic (deduplicated by highstage_id / part_number):
-  1. Downloads the datasheet PDF from the Highstage file share
+For each unique IC in the schematic (deduplicated by part_number):
+  1. Copies the datasheet PDF from the DOKARKIV network file share
   2. Extracts the pin table using PyMuPDF heuristics
   3. Cross-references each schematic pin against the datasheet type
   4. Flags mismatches (VCC on signal net, GND on power net, floating inputs, etc.)
 
-DNP components are skipped. ICs without a Highstage ID emit a question issue.
+DNP components are skipped. ICs without a part number emit a question issue.
 PINUSE values from Allegro's chipsview.dat are intentionally ignored — use
 datasheets as the authoritative source for pin types.
 
-Datasheets are stored at the repo root under datasheets/<HIGHSTAGE_ID>/
+Datasheets are stored at the repo root under datasheets/<PART_NUMBER>/
 so they are reused across all schematic reviews.
 
 Usage:
@@ -29,27 +29,18 @@ from pathlib import Path
 
 import yaml
 
-# ---------------------------------------------------------------------------
-# Highstage file share
-# ---------------------------------------------------------------------------
-HIGHSTAGE_FILE_SHARE = r"\\highstage\files\PURCHASE_SPEC\IC"
-
-
-def is_file_share_available() -> bool:
-    return Path(HIGHSTAGE_FILE_SHARE).exists()
-
-
-def find_datasheets_file(part_id: str) -> list[Path]:
-    """Return all PDF files for *part_id* on the file share."""
-    part_dir = Path(HIGHSTAGE_FILE_SHARE) / part_id
-    if not part_dir.exists():
-        return []
-    return list(part_dir.rglob("*.pdf"))
+_HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(_HERE.parent.parent / "dokarkiv" / "scripts"))
+from find_datasheet import (  # noqa: E402
+    DOKARKIV_ROOT,
+    is_share_available as is_file_share_available,
+    find_datasheets as find_datasheets_file,
+)
 
 
 def download_datasheet(part_id: str, output_dir: Path) -> list[Path]:
     """
-    Copy datasheets for *part_id* from the Highstage file share to *output_dir*.
+    Copy datasheets for *part_id* from the DOKARKIV file share to *output_dir*.
     Returns list of local Paths for successfully obtained PDFs.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -307,17 +298,17 @@ def _infer_type_from_name(name: str) -> str:
 # ---------------------------------------------------------------------------
 def get_ic_part_id(comp: dict) -> str | None:
     """
-    Return the Highstage part ID to use for downloading datasheets.
+    Return the internal part number to use for finding datasheets on DOKARKIV.
 
-    Preference: highstage_id → part_number (if it starts with 'IC').
+    Preference: part_number → mfg_part_number.
     Returns None if no usable ID is found.
     """
-    hid = (comp.get("highstage_id") or "").strip()
-    if hid:
-        return hid
     pn = (comp.get("part_number") or "").strip()
-    if pn.upper().startswith("IC"):
+    if pn:
         return pn
+    mpn = (comp.get("mfg_part_number") or "").strip()
+    if mpn:
+        return mpn
     return None
 
 
@@ -329,14 +320,14 @@ def deduplicate_ics(components: dict) -> dict[str, tuple[str, dict]]:
 
     Second-source handling notes
     ----------------------------
-    Each Highstage ID maps to one subfolder under datasheets/<ID>/. When a
+    Each part number maps to one subfolder under datasheets/<PART_NUMBER>/. When a
     component has a second-source manufacturer, that second source has its own
-    distinct Highstage ID and therefore its own datasheets/<ID2>/ subfolder —
+    distinct part number and therefore its own datasheets/<PART_NUMBER2>/ subfolder —
     so the caching structure handles second sources naturally.
 
-    However, schematic.yaml currently stores only one `highstage_id` per
+    However, schematic.yaml currently stores only one `part_number` per
     component (the primary source). If a component also carries a
-    `second_source_id` field, process_ic will download and try that folder too
+    `second_source_id` field, process_ic will look up and try that folder too
     (see process_ic below). When neither field exists for a second-source part,
     the secondary datasheet is silently skipped.
 
@@ -664,7 +655,7 @@ def process_ic(
         "net": "",
     }
 
-    # --- ICs without any Highstage ID ---
+    # --- ICs without any part number ---
     if not part_id or part_id.startswith("__noid__"):
         mpn = comp.get("mfg_part_number") or comp.get("value") or ref
         return (
@@ -672,7 +663,7 @@ def process_ic(
                 "severity": "question",
                 "type": "ic_datasheet_unavailable",
                 "description": (
-                    f"{ref} ({mpn}): no Highstage ID — datasheet check skipped"
+                    f"{ref} ({mpn}): no part number — datasheet check skipped"
                 ),
                 "components": [base_entry],
             }],
@@ -720,7 +711,7 @@ def process_ic(
                 "severity": "question",
                 "type": "ic_datasheet_unavailable",
                 "description": (
-                    f"{ref} ({mpn}, {part_id}): no datasheet found on Highstage "
+                    f"{ref} ({mpn}, {part_id}): no datasheet found on DOKARKIV "
                     f"— pin check skipped"
                 ),
                 "components": [base_entry],
@@ -764,7 +755,7 @@ def process_ic(
 # Find all schematic refs that share a given part_id
 # ---------------------------------------------------------------------------
 def refs_for_part(part_id: str, components: dict) -> list[str]:
-    """Return all refs whose Highstage ID matches *part_id*."""
+    """Return all refs whose part number matches *part_id*."""
     if part_id.startswith("__noid__"):
         return [part_id[len("__noid__"):]]
     refs = []
@@ -788,14 +779,14 @@ def verify_ic_pins(schematic_path: Path) -> list[dict]:
     components = sch.get("components", {})
     nets = sch.get("nets", {})
 
-    # Shared datasheet cache at repo root: datasheets/<HIGHSTAGE_ID>/
+    # Shared datasheet cache at repo root: datasheets/<PART_NUMBER>/
     repo_root = Path(__file__).resolve().parent.parent.parent.parent.parent
     datasheet_dir = repo_root / "datasheets"
     datasheet_dir.mkdir(parents=True, exist_ok=True)
 
     file_share_ok = is_file_share_available()
     if not file_share_ok:
-        print("[warn] Highstage file share not accessible — downloads skipped")
+        print(f"[warn] DOKARKIV file share not accessible ({DOKARKIV_ROOT}) — downloads skipped")
 
     # Deduplicate ICs
     unique_ics = deduplicate_ics(components)
@@ -855,7 +846,7 @@ def verify_ic_pins(schematic_path: Path) -> list[dict]:
 # ---------------------------------------------------------------------------
 def main():
     ap = argparse.ArgumentParser(
-        description="Verify IC pin assignments against Highstage datasheets"
+        description="Verify IC pin assignments against DOKARKIV datasheets"
     )
     ap.add_argument("schematic_folder", help="Path to schematic review folder")
     ap.add_argument("--output", "-o", help="Override output YAML path")
