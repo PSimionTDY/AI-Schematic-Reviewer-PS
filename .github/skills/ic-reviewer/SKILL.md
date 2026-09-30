@@ -48,6 +48,77 @@ datasheet PDF or `datasheet.json`. This includes:
 **If no datasheet is available**, output a single `ic_no_datasheet` question issue and stop.
 Do NOT proceed with pin analysis based on assumed pinouts.
 
+## Reading Pinout Diagrams (images, not text)
+
+Many datasheets -- especially for discrete transistors/MOSFETs/diodes and small ICs -- give the
+pin numbering **only as a package diagram/drawing** (top view with pin numbers and Source/
+Drain/Gate labels arranged around the outline), not as a text-extractable table. Text
+extraction (`extract_pdf_text.py`, LiteParse OCR) frequently fails or scrambles these because
+the pin labels are short, scattered text fragments tied to their position in a drawing, not a
+linear table.
+
+**When pin table extraction from text/OCR is empty, incomplete, or looks unreliable for a
+transistor/diode/small IC package diagram, render the relevant datasheet page as an image and
+read it directly with vision** instead of guessing or giving up:
+
+```
+venv\Scripts\python.exe .github\skills\schematic-reviewer\scripts\render_pdf_image.py {datasheet_path} --page N --dpi 250
+```
+
+1. Use `extract_pdf_text.py --info` or a quick text pass first to find which page has the
+   package/pinout diagram (look for keywords like "Pin Configuration", "Top View", "Marking").
+2. Render that page with `render_pdf_image.py --page N`. If the diagram is small relative to
+   the page, add `--crop x0,y0,x1,y1` (fractions of page width/height) to zoom into just the
+   diagram region for a sharper read -- render a first full-page pass to see roughly where it
+   sits, then re-render cropped and at a higher `--dpi` (300+) if pin numbers are still hard
+   to read.
+3. View the resulting PNG with the image-reading tool and read off the pin numbering directly
+   from the drawing (e.g. which pin is Source, Drain, Gate for a MOSFET; orientation markers
+   such as a dot, notch, or beveled corner indicating pin 1).
+4. Record what you determined directly in `datasheet.json`'s `pins` section as usual, so
+   future reviews of the same part reuse it instead of re-rendering.
+
+**Still record `ic_pinout_uncertain` (see below) if, even after viewing the rendered image, you
+cannot confidently resolve the pin numbering** (e.g. the drawing is ambiguous, multiple
+packages are shown without a clear active-package marker, or the image is too low-resolution
+even at high DPI). Do not guess.
+
+**If a datasheet exists but you cannot confidently determine the pin numbering** -- e.g. the
+extracted PDF text/OCR is too garbled to read the pinout table (and rendering the page as an
+image, per above, still didn't resolve it), the package cannot be determined among multiple
+conflicting pinouts, or the pin table conflicts with itself across pages -- do NOT guess or
+fall back to a "best effort" pin mapping. Instead:
+
+1. Output a single `ic_pinout_uncertain` **major** issue (see format below) that names
+   exactly which pins/rows you could not resolve and why (e.g. "OCR text unreadable for the
+   pin table on page 4" or "package suffix in mfg_part_number does not match any package
+   table in the datasheet"). Use **major**, not `question` — an unconfirmed pinout is a real
+   review gap (a wrongly-oriented part could pass silently), not a low-priority curiosity.
+2. In the `description` and `resolution`, explicitly prompt the user to verify the pinout
+   against the datasheet and enter it manually if needed (e.g. "Please confirm the
+   Source/Drain/Gate pin numbers for {ref} against the datasheet's pinout diagram, or supply
+   them directly, so this component's orientation can be verified.").
+3. Stop pin-level analysis for that component — do not emit any other pin-check issues
+   (`ic_vcc_not_on_power`, `ic_pinout_reversed`, etc.) for it, since they would be based on an
+   unconfirmed pinout.
+
+This is important: a low-confidence pinout is *not* the same as "no datasheet" — treat it as
+its own distinct, user-actionable gap so the reviewer never silently skips or silently guesses
+at a component's pin numbering.
+
+```yaml
+issues:
+  - severity: major
+    type: ic_pinout_uncertain
+    summary: "Q4 (T951835): pinout could not be confirmed from the datasheet — manual verification required"
+    description: "Q4 (T951835, U-DFN2020-6 MOSFET): datasheet pinout table could not be read reliably (OCR text garbled on the pin-diagram page, and the diagram itself was ambiguous even after rendering it as an image) — unable to confirm which pins are Source vs Drain vs Gate. Pin-level checks (orientation, power/ground assignment) were skipped for this component."
+    resolution: "Please verify the Source/Drain/Gate pin numbers for Q4 against the datasheet's pinout diagram and enter the correct pin assignments (e.g. via datasheet.json or by re-running the review with the confirmed pinout) so this component can be checked."
+    pin: ""
+    net: ""
+    components:
+      - ref: Q4
+```
+
 ---
 
 **If `datasheet_json_path` is null** (no `datasheet.json` exists yet):

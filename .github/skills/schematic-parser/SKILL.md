@@ -5,7 +5,9 @@ description: Parse Cadence Allegro schematic exports to extract component connec
 
 # Schematic Parser Skill
 
-Parses Cadence Allegro CAD export files and schematic PDFs to extract connection data and engineering notes.
+Parses CAD netlist exports — Cadence Allegro (`*View.dat` / `pst*.dat`), EDIF (`.eds`), Altium
+(`.PrjPcb` / OrCadPCB2Netlist `.NET`), and FlatNet (`.txt`) — plus schematic PDFs, to extract
+connection data and engineering notes. Format detection is automatic; see **Input Files** below.
 
 ## Python Environment
 
@@ -30,9 +32,19 @@ Use `explore` subagents for targeted searches across the generated `schematic.ya
 
 ## Input Files
 
-Two Allegro export formats are supported — the parser detects automatically:
+**`schematic_parser.py` auto-detects the export format** — you never need to specify which
+format a schematic folder uses. Just point it at `<schematic_folder>` and it picks the right
+parser internally, in this detection order:
 
-**Format A (newer): `*View.dat`**
+| Priority | Format | Detected by | Delegated to |
+|----------|--------|-------------|--------------|
+| 1 | **Altium** (`.PrjPcb` / OrCadPCB2Netlist `.NET`) | `*.PrjPcb` file, or `Nets */OrCadPCB2Netlist/*.NET` | `altium_parser.py` |
+| 2 | **FlatNet** (`.txt` netlist export) | a `*.txt` file matching the FlatNet line format | `flatnet_parser.py` |
+| 3 | **EDIF** (`.eds`) | a `*.eds` / `*.EDS` file directly in the folder | `eds_parser.py` |
+| 4 | **Allegro `*View.dat`** (newer) | `allegro/pinView.dat` exists | inline parsing in `schematic_parser.py` |
+| 5 | **Allegro `pst*.dat`** (older) | `allegro/pstxnet.dat` exists | inline parsing in `schematic_parser.py` |
+
+**Allegro `*View.dat` (newer):**
 ```
 <schematic_folder>/allegro/
 ├── pinView.dat     ← connections: NET_NAME, REFDES, PIN_NUMBER, FUNC_DES
@@ -42,7 +54,7 @@ Two Allegro export formats are supported — the parser detects automatically:
 └── chipsView.dat   ← pin directions (PINUSE) — same format as pstchip.dat
 ```
 
-**Format B (older): `pst*.dat`**
+**Allegro `pst*.dat` (older):**
 ```
 <schematic_folder>/allegro/
 ├── pstxnet.dat     ← netlist (NET_NAME / NODE_NAME blocks)
@@ -50,15 +62,27 @@ Two Allegro export formats are supported — the parser detects automatically:
 └── pstxprt.dat     ← part placement with XY coordinates
 ```
 
-See `references/allegro_formats.md` (in the schematic-reviewer skill) for full format details.
+**EDIF (`.eds`)**: a single `*.eds`/`*.EDS` file placed directly in `<schematic_folder>`
+(no `allegro/` subfolder needed). This is the format used by e.g. `LUTC-REVA`/`LUTC-REVB`.
+
+**Altium** / **FlatNet**: see `altium_parser.py` / `flatnet_parser.py` for the exact file
+layout each expects.
+
+See `references/allegro_formats.md` (in the schematic-reviewer skill) for full Allegro format
+details.
 
 ## Parsing the Netlist
 
-Run the parser to generate `CONNECTIONS_REPORT.md` in the schematic folder:
+Run the parser to generate `CONNECTIONS_REPORT.md` in the schematic folder — the same command
+works no matter which format the folder actually contains:
 
 ```
 python skills/schematic-parser/scripts/schematic_parser.py <schematic_folder>
 ```
+
+`parse()` returns a `format` field (`'altium' | 'flatnet' | 'eds' | 'view' | 'pst'`) so callers
+can tell which parser was actually used; the CLI also prints `Format: <name>` in its summary
+line, e.g. `Format: eds | Nets: 87 | Components: 194 | Connections: 441`.
 
 The report has two sections:
 - **By component** — each component with all its pin-to-net connections

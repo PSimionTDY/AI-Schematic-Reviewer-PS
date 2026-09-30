@@ -127,12 +127,14 @@ def infer_net_voltage(net_name: str) -> dict:
             confidence = conf
             if fixed_v is not None:
                 voltage = fixed_v
-            elif m.lastindex == 2:
+            elif m.lastindex == 2 and m.group(1).isdigit() and m.group(2).isdigit():
                 # e.g. 3V3 -> groups 3,3 -> 3.3
                 voltage = float(f"{m.group(1)}.{m.group(2)}")
-            elif m.lastindex == 1:
+            elif m.lastindex == 1 and m.group(1).isdigit():
                 # e.g. 5V -> group 5 -> 5.0
                 voltage = float(m.group(1))
+            # else: pattern matched a named rail (e.g. VIN, VCC) with no numeric
+            # capture group of its own -- leave voltage as None (unknown magnitude).
             break
 
     # Net type
@@ -984,7 +986,7 @@ def build_yaml(schematic_folder: Path, output_path: Path, pdf_path: Path | None 
             'mfg':            comp['mfg'],
             'mpn':            comp['mpn'],
             'package':        comp['package'],
-            'part_number':    bom_ids.get(ref, ''),
+            'part_number':    bom_ids.get(ref, '') or comp.get('part_name', ''),
             'comp_type':      ctype,
             'role':           roles.get(ref),
             'verified':       auto_verified,
@@ -1167,7 +1169,7 @@ def build_db(schematic_folder: Path, db_path: Path, pdf_path: Path | None = None
             'mfg':           comp['mfg'],
             'mpn':           comp['mpn'],
             'package':       comp['package'],
-            'part_number':   bom_ids.get(ref, ''),
+            'part_number':   bom_ids.get(ref, '') or comp.get('part_name', ''),
             'comp_type':     ctype,
             'role':          roles.get(ref),
             'verified':      auto_verified,

@@ -730,11 +730,22 @@ def process_ic(
         pdf_names = ", ".join(p.name for p in local_pdfs)
         return (
             [{
-                "severity": "question",
-                "type": "ic_pin_table_not_extracted",
+                "severity": "major",
+                "type": "ic_pinout_uncertain",
+                "summary": (
+                    f"{ref} ({mpn}): pinout could not be confirmed from the datasheet — "
+                    f"manual verification required"
+                ),
                 "description": (
-                    f"{ref} ({mpn}): could not extract pin table from datasheet "
-                    f"({pdf_names}) — manual check required"
+                    f"{ref} ({mpn}): could not extract a pin table from datasheet "
+                    f"({pdf_names}) — pin numbering/orientation could not be confirmed. "
+                    f"Pin-level checks (orientation, power/ground assignment) were skipped "
+                    f"for this component."
+                ),
+                "resolution": (
+                    f"Please verify the pin assignments for {ref} against the datasheet's "
+                    f"pinout diagram/table and enter the correct pin assignments (e.g. via "
+                    f"datasheet.json) so this component can be checked."
                 ),
                 "components": [base_entry],
             }],

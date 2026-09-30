@@ -485,7 +485,23 @@ Spawn one `general-purpose` agent with this prompt:
 venv\Scripts\python.exe .github\skills\schematic-reviewer\scripts\validate_issues.py reviews/<SCH_ID>/REVIEW/review.db
 ```
 
-Checks every row in the `issues` table for missing or malformed fields. Exit code 0 = no errors (warnings are acceptable); exit code 1 = one or more errors that must be fixed before reporting; exit code 2 = DB not readable.
+Checks every row in the `issues` table for missing or malformed fields. **Also runs the IC/transistor/diode/zener/led review-coverage check** (`verify_ic_coverage.py`): every non-DNP reviewable component must have either `verified=1` set or at least one issue recorded by the IC-review pass (source `ic_review` or a `ic_*` type — a generic BOM/supply-chain/capacitor-sweep mention does **not** count). A component with neither means its review step was silently skipped rather than run-and-passed, and is reported as an ERROR by default.
+
+> This closes a real gap found in practice: in an earlier review, two transistors never had a datasheet fetched and were never pin-reviewed by an agent — the review step was skipped entirely rather than emitting the expected `ic_no_datasheet` fallback question. No issue of any kind was recorded for them, so a reversed transistor orientation went undetected. This gate ensures every reviewable component leaves a trace — either a verdict or an explicit "could not review" question — before the report can be generated.
+
+Exit code 0 = no errors (warnings are acceptable); exit code 1 = one or more errors (including unreviewed components) that must be fixed before reporting; exit code 2 = DB not readable.
+
+For an intentional partial/targeted review where some components are deliberately out of scope, pass `--allow-unreviewed` to downgrade coverage gaps to warnings:
+
+```bash
+venv\Scripts\python.exe .github\skills\schematic-reviewer\scripts\validate_issues.py reviews/<SCH_ID>/REVIEW/review.db --allow-unreviewed
+```
+
+You can also run the coverage check standalone (e.g. mid-review, before all tiers are done):
+
+```bash
+venv\Scripts\python.exe .github\skills\schematic-reviewer\scripts\verify_ic_coverage.py reviews/<SCH_ID>/REVIEW/review.db
+```
 
 Then generate the interactive viewer:
 
@@ -585,7 +601,7 @@ Estimates per-component power dissipation. Generates issues for high-dissipation
 ```bash
 python .github/skills/schematic-reviewer/scripts/validate_issues.py reviews/<SCH_ID>/REVIEW/review.db
 ```
-Must exit 0 before generating the report. Checks for missing summaries, invalid severities, and malformed rows.
+Must exit 0 before generating the report. Checks for missing summaries, invalid severities, malformed rows, **and** IC/transistor/diode/zener/led review coverage — any reviewable, non-DNP component with no `verified` flag and no `ic_review`-sourced issue is reported as an error (pass `--allow-unreviewed` to downgrade to warnings for an intentionally partial review). See `verify_ic_coverage.py` for the standalone coverage-only check.
 
 ### 8. Generate review.html
 ```bash

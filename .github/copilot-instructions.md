@@ -1,5 +1,15 @@
 # Copilot Instructions — Schematic Reviewer
 
+## Performing a schematic review
+
+**Always use the `schematic-reviewer` skill** (`.github/skills/schematic-reviewer/SKILL.md`)
+whenever the user asks to review, verify, or audit a schematic — e.g. "review this schematic",
+"do a full review", "check the design", "verify the components", "look for issues", or any
+similar request. Read `SKILL.md` (and the checklist it references) and follow its pipeline
+(`build` → `datasheets` → IC review tiers → verification → `report`) rather than running
+individual parser/verification scripts ad hoc. Only skip steps the user explicitly asks to skip
+or that don't apply to a targeted/partial review.
+
 ## Datasheet / part-info source policy
 
 Use the **`dokarkiv`** skill by default for all datasheet and component-information lookups

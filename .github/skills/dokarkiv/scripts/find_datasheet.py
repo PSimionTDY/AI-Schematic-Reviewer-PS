@@ -81,10 +81,17 @@ def range_folder_for_numeric_id(numeric_id: str) -> str:
     DOKARKIV groups parts into folders named after the start of a thousand
     range, e.g. part "119200" is stored in folder "119000" (covering
     119000-119999). Non-numeric or short ids fall back to the id itself.
+
+    7-digit part ids (e.g. "1950257") are filed under the thousand-range of
+    their **last 6 digits** (folder "950000"), not their literal leading
+    digits (there is no "1950000" range folder) -- the leading digit appears
+    to be a series/prefix rather than part of the range grouping. Taking the
+    id modulo 1,000,000 before computing the range start handles both
+    6-digit and 7-digit ids uniformly.
     """
     if not numeric_id.isdigit():
         return numeric_id
-    n = int(numeric_id)
+    n = int(numeric_id) % 1_000_000
     range_start = (n // 1000) * 1000
     return str(range_start)
 

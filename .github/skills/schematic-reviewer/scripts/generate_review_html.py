@@ -156,8 +156,18 @@ def load_from_db(db_path: Path) -> tuple[dict, dict]:
         schematic['pipeline'] = pipeline
 
     # --- issues ---
+    # Order by severity rank (critical first, info last), not alphabetically —
+    # plain `ORDER BY severity` would sort as critical, info, major, minor,
+    # question, which is not decreasing severity.
+    _SEVERITY_RANK = {
+        "critical": 0,
+        "major": 1,
+        "minor": 2,
+        "question": 3,
+        "info": 4,
+    }
     issues_list: list[dict] = []
-    for row in conn.execute('SELECT * FROM issues ORDER BY severity, id'):
+    for row in conn.execute('SELECT * FROM issues'):
         issue = {k: row[k] for k in row.keys()}
         for json_field in ('refs', 'components', 'also_reported_by'):
             if issue.get(json_field):
@@ -167,6 +177,13 @@ def load_from_db(db_path: Path) -> tuple[dict, dict]:
                     pass
         issue['source_label'] = _SOURCE_LABELS.get(issue.get('source') or '', 'General')
         issues_list.append(issue)
+
+    issues_list.sort(
+        key=lambda i: (
+            _SEVERITY_RANK.get((i.get('severity') or '').lower(), 99),
+            i.get('id') or '',
+        )
+    )
 
     conn.close()
 

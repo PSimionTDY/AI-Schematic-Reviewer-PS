@@ -1,13 +1,23 @@
 """
-validate_issues.py — Pre-report validation gate for review.db.
+validate_issues.py -- Pre-report validation gate for review.db.
 
 Checks the ``issues`` table for incomplete or malformed rows and reports
 problems before the final review report is generated.
+
+Also runs the IC/transistor/diode/zener/led **coverage** check (see
+``verify_ic_coverage.py``): every non-DNP reviewable component must either be
+marked ``verified=1`` or have at least one issue recorded by the IC-review
+pass. A component with neither means its review step was silently skipped
+(not run-and-passed) -- this is treated as an ERROR by default since it
+represents an unknown gap in coverage, not a graded finding. Use
+``--allow-unreviewed`` to downgrade these to warnings for a partial/targeted
+review where skipping certain components is expected.
 
 Usage:
     python validate_issues.py reviews/<SCH_ID>/REVIEW/review.db
     python validate_issues.py reviews/<SCH_ID>/REVIEW/review.db --errors-only
     python validate_issues.py reviews/<SCH_ID>/REVIEW/review.db --json
+    python validate_issues.py reviews/<SCH_ID>/REVIEW/review.db --allow-unreviewed
 
 Exit codes:
     0  no ERRORs (warnings are fine)
@@ -34,18 +44,23 @@ VALID_SEVERITIES = {"critical", "major", "minor", "question", "info"}
 # Core validation logic
 # ---------------------------------------------------------------------------
 
-def validate_issues(db_path: Path | str) -> dict:
+def validate_issues(db_path: Path | str, allow_unreviewed: bool = False) -> dict:
     """Validate all rows in the ``issues`` table of *db_path*.
 
     Args:
         db_path: Path to a ``review.db`` SQLite file.
+        allow_unreviewed: If True, components with no IC-review coverage are
+            reported as warnings instead of errors (for partial/targeted
+            reviews where skipping components is expected).
 
     Returns:
         A dict with keys:
-        - ``"errors"``: list of ``{"id": str, "message": str}``
-        - ``"warnings"``: list of ``{"id": str, "message": str}``
-        - ``"checked"``: int — total number of issue rows examined
-        - ``"sch_id"``: str — value of ``sch_id`` from ``meta``, or ``""``
+        - "errors": list of {"id": str, "message": str}
+        - "warnings": list of {"id": str, "message": str}
+        - "checked": int -- total number of issue rows examined
+        - "sch_id": str -- value of sch_id from meta, or ""
+        - "unreviewed_components": list of {"ref", "comp_type", "part_number"}
+          -- components with zero IC-review coverage (see verify_ic_coverage.py)
     """
     import sqlite3
 
@@ -165,11 +180,39 @@ def validate_issues(db_path: Path | str) -> dict:
 
     conn.close()
 
+    # ---- IC/transistor/diode review coverage check ---------------------------
+    # Catches components that were silently skipped by the IC-review pipeline
+    # (no verified flag AND no issue of any kind recorded against them) rather
+    # than reviewed and found clean. See verify_ic_coverage.py for details.
+    try:
+        from verify_ic_coverage import verify_ic_coverage
+    except ImportError:
+        _scripts = Path(__file__).parent
+        sys.path.insert(0, str(_scripts))
+        from verify_ic_coverage import verify_ic_coverage
+
+    coverage_result = verify_ic_coverage(db_path)
+    unreviewed = coverage_result["unreviewed"]
+
+    for u in unreviewed:
+        pn = f" ({u['part_number']})" if u["part_number"] else ""
+        msg = (
+            f"component review skipped: {u['ref']} [{u['comp_type']}]{pn} has no "
+            f"'verified' flag and no IC-review issue on record -- the IC-review "
+            f"pipeline never reached a verdict on this component"
+        )
+        pseudo_id = f"COVERAGE_{u['ref']}"
+        if allow_unreviewed:
+            _warn(pseudo_id, msg)
+        else:
+            _err(pseudo_id, msg)
+
     return {
         "errors": errors,
         "warnings": warnings,
         "checked": len(rows),
         "sch_id": sch_id,
+        "unreviewed_components": unreviewed,
     }
 
 
@@ -182,21 +225,36 @@ def _print_report(result: dict, errors_only: bool = False) -> None:
     checked = result["checked"]
     errors = result["errors"]
     warnings = result["warnings"]
+    unreviewed = result.get("unreviewed_components", [])
 
     print(f"validate_issues: {sch_id}  ({checked} issues checked)")
 
-    if errors:
-        print(f"  ERRORS ({len(errors)}):")
-        for e in errors:
+    issue_errors = [e for e in errors if not e["id"].startswith("COVERAGE_")]
+    issue_warnings = [w for w in warnings if not w["id"].startswith("COVERAGE_")]
+    coverage_errors = [e for e in errors if e["id"].startswith("COVERAGE_")]
+    coverage_warnings = [w for w in warnings if w["id"].startswith("COVERAGE_")]
+
+    if issue_errors:
+        print(f"  ERRORS ({len(issue_errors)}):")
+        for e in issue_errors:
             print(f"    {e['id']}  {e['message']}")
 
-    if warnings and not errors_only:
-        print(f"  WARNINGS ({len(warnings)}):")
-        for w in warnings:
+    if issue_warnings and not errors_only:
+        print(f"  WARNINGS ({len(issue_warnings)}):")
+        for w in issue_warnings:
             print(f"    {w['id']}  {w['message']}")
 
-    ok_count = checked - len({e["id"] for e in errors} | {w["id"] for w in warnings})
+    ok_count = checked - len({e["id"] for e in issue_errors} | {w["id"] for w in issue_warnings})
     print(f"  OK: {ok_count} issues passed all checks")
+
+    if unreviewed:
+        label = "WARNINGS" if coverage_warnings else "ERRORS"
+        bucket = coverage_warnings if coverage_warnings else coverage_errors
+        print(f"  COMPONENT REVIEW COVERAGE {label} ({len(bucket)}):")
+        for c in bucket:
+            print(f"    {c['id']}  {c['message']}")
+    else:
+        print("  COMPONENT REVIEW COVERAGE: OK -- every reviewable component was verified or has a recorded issue")
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +272,12 @@ def main() -> None:
         help="Suppress warnings; only show errors",
     )
     parser.add_argument(
+        "--allow-unreviewed",
+        action="store_true",
+        help="Downgrade IC-review coverage gaps to warnings instead of errors "
+             "(use for intentional partial/targeted reviews)",
+    )
+    parser.add_argument(
         "--json",
         dest="output_json",
         action="store_true",
@@ -227,7 +291,7 @@ def main() -> None:
         sys.exit(2)
 
     try:
-        result = validate_issues(db_path)
+        result = validate_issues(db_path, allow_unreviewed=args.allow_unreviewed)
     except Exception as exc:  # noqa: BLE001
         print(f"ERROR: could not read DB: {exc}", file=sys.stderr)
         sys.exit(2)
