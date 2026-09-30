@@ -152,7 +152,6 @@ When a `board_interface.json` exists for this board **and** its mating board(s):
 Run `verify_bom.py` — issues are written to `review.db` automatically.
 
 - [ ] All active (non-DNP) components have a manufacturer part number
-- [ ] All ICs and key passives have a Highstage ID for procurement lookup
 - [ ] All passives (R, C, L) have a value populated
 - [ ] All components have a package/footprint specified
 - [ ] DNP components are intentional — confirm with designer if uncertain
@@ -186,7 +185,6 @@ Run `check_price_availability.py` then `check_obsolescence.py` — issues writte
 - [ ] No components with `last_time_buy` or `discontinued` status — or approved alternate sourcing plan
 - [ ] No DIP/through-hole packages on an SMD board (unless intentional)
 - [ ] All ICs have a manufacturer part number (prerequisite for obsolescence checking)
-- [ ] Check Highstage for suggested replacements for any flagged parts
 
 ---
 

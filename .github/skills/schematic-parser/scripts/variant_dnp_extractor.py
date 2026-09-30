@@ -20,9 +20,8 @@ Component substitution detection:
   - Same ref des, different Value or Part Number between base and variant.
   - Split ICs (U1A, U1B, ...) are grouped under the root ref (U1).
 
-Variant PDF discovery (priority order):
-  1. Highstage refby API → PCB_ASSY IDs → UNC paths for fresh PDFs
-  2. Local folder scan (fallback when Highstage unreachable)
+Variant PDF discovery:
+  Local folder scan of reviews/<SCH_ID>/ for base and *_PCB_ASSY<num>.pdf files.
 
 Usage:
     python variant_dnp_extractor.py reviews/SCH23729-3
@@ -30,9 +29,7 @@ Usage:
 """
 
 import argparse
-import os
 import re
-import subprocess
 import sys
 from pathlib import Path
 
@@ -48,62 +45,12 @@ from pdf_annotation_extractor import extract_annotations
 
 
 # ---------------------------------------------------------------------------
-# Highstage variant discovery
-# ---------------------------------------------------------------------------
-
-def find_variants_via_highstage(schematic_id: str) -> list[str]:
-    """Find PCB_ASSY variants linked to this schematic via Highstage refby API."""
-    ps_cmd = (
-        f'$r = Invoke-WebRequest "https://highstage/ts/ts/ref/refby.exe.aspx?t=doc&o={schematic_id}"'
-        f' -UseDefaultCredentials -SkipCertificateCheck -ErrorAction SilentlyContinue; $r.Content'
-    )
-    try:
-        result = subprocess.run(
-            ['powershell', '-Command', ps_cmd],
-            capture_output=True, text=True, timeout=30,
-        )
-    except Exception:
-        return []
-    if result.returncode != 0 or not result.stdout.strip():
-        return []
-    html = result.stdout
-    assemblies = list(set(re.findall(r'PCB_ASSY[\w\-]+', html)))
-    versioned = [a for a in assemblies if re.match(r'PCB_ASSY\d+-\d+$', a)]
-    return sorted(versioned)
-
-
-def find_variant_pdf_on_highstage(assembly_id: str, schematic_id: str) -> str | None:
-    """Find the variant PDF for a given PCB_ASSY on Highstage UNC share."""
-    base_id = assembly_id.split('-')[0]
-    unc_path = f"\\\\highstage\\files\\PURCHASE_SPEC\\PCB_ASSY\\{base_id}\\{assembly_id}\\"
-    try:
-        if not os.path.exists(unc_path):
-            return None
-        files = os.listdir(unc_path)
-    except Exception:
-        return None
-    # Prefer PDF matching the schematic name
-    for f in files:
-        if f.lower().endswith('.pdf') and schematic_id.lower() in f.lower():
-            return os.path.join(unc_path, f)
-    # Fall back: any PDF in the folder
-    for f in files:
-        if f.lower().endswith('.pdf'):
-            return os.path.join(unc_path, f)
-    return None
-
-
-# ---------------------------------------------------------------------------
 # PDF discovery
 # ---------------------------------------------------------------------------
 
 def find_pdfs(review_dir: Path) -> tuple[Path | None, list[Path]]:
     """
-    Find base PDF and variant PDFs.
-
-    Priority:
-      1. Highstage refby API → PCB_ASSY IDs → UNC paths for fresh PDFs
-      2. Local folder scan (fallback when Highstage unreachable)
+    Find base PDF and variant PDFs via local folder scan.
 
     Naming convention (local):
       Base:    <schematic_name>.pdf           (no ASSY suffix)
@@ -111,46 +58,24 @@ def find_pdfs(review_dir: Path) -> tuple[Path | None, list[Path]]:
 
     Returns (base_pdf, [variant_pdf, ...]).
     """
-    # Determine base PDF from local scan first (always needed)
     all_pdfs = sorted(p for p in review_dir.glob('*.pdf') if not p.name.startswith('.'))
     variant_pattern = re.compile(r'_PCB_ASSY[\d-]+\.pdf$', re.IGNORECASE)
 
     base_pdf: Path | None = None
-    local_variant_pdfs: list[Path] = []
+    variant_pdfs: list[Path] = []
 
     for pdf in all_pdfs:
         if variant_pattern.search(pdf.name):
-            local_variant_pdfs.append(pdf)
+            variant_pdfs.append(pdf)
         else:
             if base_pdf is None:
                 base_pdf = pdf
             elif pdf.stem.lower() == review_dir.name.lower():
                 base_pdf = pdf
 
-    local_variant_pdfs.sort(key=lambda p: p.name.lower())
+    variant_pdfs.sort(key=lambda p: p.name.lower())
 
-    # Attempt Highstage discovery
-    schematic_id = review_dir.name.upper()
-    print(f"Querying Highstage refby API for {schematic_id}...")
-    hs_assemblies = find_variants_via_highstage(schematic_id)
-
-    if hs_assemblies:
-        print(f"  Highstage found {len(hs_assemblies)} PCB_ASSY: {hs_assemblies}")
-        highstage_pdfs: list[Path] = []
-        for assy in hs_assemblies:
-            unc = find_variant_pdf_on_highstage(assy, schematic_id.lower())
-            if unc:
-                highstage_pdfs.append(Path(unc))
-                print(f"  {assy} -> {unc}")
-            else:
-                print(f"  {assy} -> UNC not accessible, falling back to local")
-        if highstage_pdfs:
-            return base_pdf, highstage_pdfs
-
-    if not hs_assemblies:
-        print("  Highstage unreachable or no results — using local folder scan")
-
-    return base_pdf, local_variant_pdfs
+    return base_pdf, variant_pdfs
 
 
 def assembly_name(variant_pdf: Path) -> str:

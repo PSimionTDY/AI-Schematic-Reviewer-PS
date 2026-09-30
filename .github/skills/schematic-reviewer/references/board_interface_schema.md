@@ -40,7 +40,7 @@ A `board_interface.json` allows the review pipeline to:
   // ── Board identity ─────────────────────────────────────────────────────────
   "board": {
     "name":           "Teledyne Reson RP3 RX CPU Board",  // string
-    "part_number":    "PCB_ASSY1019832-1C",               // string — Highstage/BOM part number
+    "part_number":    "PCB_ASSY1019832-1C",               // string — BOM part number
     "revision":       "2025a",                            // string — schematic revision
     "description":    "CPU/FPGA carrier board for ...",   // string
     "generated_from": "SCH_ID or netlist path",           // string | null

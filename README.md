@@ -5,7 +5,7 @@ An AI-assisted schematic review system for Cadence Allegro / EDIF schematic expo
 ## How it works (Täby workflow)
 
 Unlike an earlier version of this tool, **schematics are no longer fetched automatically** from
-Highstage or any other external system. Instead, you place the exported schematic files
+any external system. Instead, you place the exported schematic files
 yourself into a review folder, and the reviewer works entirely from what it finds there.
 
 ### 1. Create a review folder and drop in your files
@@ -98,7 +98,6 @@ Four skills work together. You can use them individually or let the master skill
 | `schematic-parser` | Parse Allegro/EDIF/Altium/FlatNet netlist files, search connections, trace signals, read engineering notes from PDF |
 | `ic-reviewer` | Per-IC/transistor/diode pin-by-pin review against a datasheet, invoked by `schematic-reviewer` |
 | `dokarkiv` | Look up and download component datasheets from the internal DOKARKIV network file share (default datasheet source) |
-| `highstage` | Download component datasheets/BOM from the internal Highstage parts database (only when explicitly requested) |
 
 ## Setup (first time only)
 
@@ -167,7 +166,6 @@ Both persist between sessions. On a fresh clone they start empty and are populat
 ```
 .github/skills/
 ├── dokarkiv/               ← DOKARKIV datasheet lookup (default source)
-├── highstage/              ← Highstage datasheet & BOM access (opt-in only)
 ├── ic-reviewer/            ← per-IC/transistor/diode pin review
 ├── schematic-parser/       ← netlist parser (Allegro/EDIF/Altium/FlatNet) + connection search
 └── schematic-reviewer/     ← master review orchestrator + checklist

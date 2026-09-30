@@ -1,14 +1,13 @@
 ---
 name: dokarkiv
-description: Access component datasheets and part information from the internal DOKARKIV network file share. This is the DEFAULT datasheet source for this project. Use this skill whenever the user wants to look up a part, download a datasheet PDF, or batch-download datasheets for components in a design. Trigger even when the user doesn't say "DOKARKIV" explicitly — phrases like "get the datasheet for T19200", "download all IC datasheets", or "find the datasheet on the network drive" should all trigger this skill. Do NOT use the `highstage` skill instead unless the user explicitly asks for Highstage.
+description: Access component datasheets and part information from the internal DOKARKIV network file share. This is the DEFAULT datasheet source for this project. Use this skill whenever the user wants to look up a part, download a datasheet PDF, or batch-download datasheets for components in a design. Trigger even when the user doesn't say "DOKARKIV" explicitly — phrases like "get the datasheet for T19200", "download all IC datasheets", or "find the datasheet on the network drive" should all trigger this skill.
 ---
 
 # DOKARKIV Skill
 
 Provides access to component datasheets stored on the internal `DOKARKIV` network file share. Use the bundled script to find and copy datasheet PDFs without needing a browser or any external API.
 
-> **This is the default datasheet source.** Only use the `highstage` skill if the user explicitly
-> asks for Highstage (e.g. says "check Highstage" or references a Highstage part ID directly).
+> **This is the default datasheet source.**
 
 ## Python Environment
 

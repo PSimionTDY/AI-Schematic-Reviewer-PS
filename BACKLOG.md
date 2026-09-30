@@ -9,7 +9,6 @@ Track feature requests and ideas here. Implemented items move to the relevant sk
 | ID | Feature | Branch |
 |----|---------|--------|
 | track-viewer | Interactive review.html viewer (graph + PDF split pane) | feat/viewer |
-| track-highstage | Schematic downloader, DNP detection, datasheet access probe | feat/highstage |
 | track-verification | Cap/resistor verification, issues.yaml | feat/verification |
 | track-dsn | DSN format investigation + PDF consistency checks | feat/dsn-investigation |
 

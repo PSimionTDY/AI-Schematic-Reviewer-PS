@@ -4,12 +4,8 @@ This document describes the Claude skills available in this schematic review pro
 
 ## Datasheet / part-info source policy
 
-**Use the `dokarkiv` skill by default for all datasheet and component-information lookups.**
+**Use the `dokarkiv` skill for all datasheet and component-information lookups.**
 The internal DOKARKIV network file share (`\\SE-ARN-FS2\Vol1\DOKARKIV`) is the standard source.
-
-**Do not use the `highstage` skill unless the user explicitly asks for Highstage** (e.g. says
-"check Highstage", "use Highstage", or references a Highstage part ID like `IC1008360` directly).
-If the user just asks to "find a datasheet" or "look up a part", assume DOKARKIV.
 
 ## Concurrent writes to schematic.yaml
 
@@ -66,7 +62,7 @@ This applies to all agents and scripts in this project:
 All Python scripts in `.github/skills/` are pre-approved for execution — run them without asking the user for permission. The following tools are always allowed:
 
 - `python` — running any script under `.github/skills/`
-- `powershell` / `pwsh` — for Highstage API calls (SSPI auth) and file share access
+- `powershell` / `pwsh` — for file share access
 - Read/write access to `reviews/` — all review workspace files
 
 If running in a fresh session, the user can also run `/allow-all` to approve all tools for the session.
@@ -85,41 +81,14 @@ Run `/skills` to see them listed.
 |-------|----------------|-----------------|
 | `schematic-reviewer` | "review this schematic", "check the design", "verify components" | master orchestrator |
 | `schematic-parser` | "parse the schematic", "find net SDA", "trace this signal" | `.github/skills/schematic-parser/scripts/` |
-| `highstage` | "download datasheet", "get BOM from Highstage", "look up IC1008360" | `.github/skills/highstage/scripts/` |
 
 ## Dependencies
 
-Install Python dependencies for the highstage skill's HTTP fallback:
+Install Python dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
-
-File share access (`\\highstage\`) requires no additional dependencies.
-
----
-
-## highstage Skill
-
-**Purpose**: Download component datasheets and BOM data from the internal Highstage parts database.
-
-**Scripts**: `.github/skills/highstage/scripts/`
-
-```bash
-# Download datasheets for a part
-python .github/skills/highstage/scripts/highstage_downloader.py IC1008360
-
-# List available datasheets without downloading
-python .github/skills/highstage/scripts/highstage_downloader.py IC1008360 --list
-
-# Batch download from BOM (filter to ICs only)
-python .github/skills/highstage/scripts/highstage_downloader.py --bom bom.csv --filter "U,IC" --limit 20
-
-# Force HTTP if file share unavailable
-python .github/skills/highstage/scripts/highstage_downloader.py IC1008360 --http
-```
-
-Uses UNC file share (`\\highstage\files\PURCHASE_SPEC\IC\`) by default. Falls back to HTTPS with Windows SSPI auth.
 
 ---
 
